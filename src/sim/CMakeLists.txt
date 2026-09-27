@@ -1,0 +1,5 @@
+add_executable(asep_fake_base fake_base.cpp)
+target_link_libraries(asep_fake_base PRIVATE basestation_core basestation_warnings)
+
+add_executable(asep_log_dump log_dump.cpp)
+target_link_libraries(asep_log_dump PRIVATE basestation_core basestation_warnings)
