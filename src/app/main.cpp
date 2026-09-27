@@ -11,6 +11,7 @@
 #include <imgui_impl_sdlrenderer3.h>
 #include <implot.h>
 
+#include <cfloat>
 #include <cstdio>
 #include <string>
 
@@ -107,6 +108,9 @@ int main(int argc, char** argv) {
 
             ImGui_ImplSDLRenderer3_NewFrame();
             ImGui_ImplSDL3_NewFrame();
+            // Screenshots: keep the (virtual) mouse out of the window so no
+            // hover highlight or tooltip ends up in the picture.
+            if (!opts.screenshot_path.empty()) io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
             ImGui::NewFrame();
 
             app.frame();

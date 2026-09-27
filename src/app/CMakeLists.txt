@@ -22,6 +22,18 @@ add_executable(asep_base_station
   main.cpp
   cli.cpp
   app.cpp
+  gamepad.cpp
+  settings.cpp
+  theme.cpp
+  ui_util.cpp
+  ui_toolbar.cpp
+  ui_fleet_view.cpp
+  ui_boats.cpp
+  ui_commands.cpp
+  ui_teleop.cpp
+  ui_plots.cpp
+  ui_link.cpp
+  ui_events.cpp
 )
 target_link_libraries(asep_base_station PRIVATE basestation_core imgui basestation_warnings)
 

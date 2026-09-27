@@ -16,7 +16,15 @@ const char* usage() {
            "  --size WxH              initial window size in pixels\n"
            "  --screenshot FILE.png   save a screenshot after a delay, then exit\n"
            "  --screenshot-after S    delay before the screenshot (default 3)\n"
-           "  -h, --help              show this help\n";
+           "  -h, --help              show this help\n"
+           "\n"
+           "For screenshots / testing:\n"
+           "  --fresh                 ignore saved settings and window layout; save nothing\n"
+           "  --select ID             select boat ID at startup\n"
+           "  --focus NAME            bring a panel to the front (Fleet, Boats, Commands,\n"
+           "                          Teleop, Plots, Link, Events)\n"
+           "  --test-disable ID       send Disable to boat ID (255 = all) 3 s after connecting\n"
+           "  --test-teleop ID        enable teleop to boat ID at startup\n";
 }
 
 bool parse_cli(int argc, char** argv, Options& out, std::string* error) {
@@ -70,6 +78,25 @@ bool parse_cli(int argc, char** argv, Options& out, std::string* error) {
             if (!v) return false;
             out.screenshot_after_s = std::atof(v);
             if (out.screenshot_after_s < 0) out.screenshot_after_s = 0;
+        } else if (!std::strcmp(a, "--fresh")) {
+            out.fresh = true;
+        } else if (!std::strcmp(a, "--select") || !std::strcmp(a, "--test-disable") ||
+                   !std::strcmp(a, "--test-teleop")) {
+            const char* v = need_value(i, a);
+            if (!v) return false;
+            char* end = nullptr;
+            const long id = std::strtol(v, &end, 10);
+            if (!end || *end || id < 1 || id > 255) {
+                *error = std::string("invalid boat id for ") + a + ": " + v;
+                return false;
+            }
+            if (!std::strcmp(a, "--select")) out.select_boat = static_cast<int>(id);
+            else if (!std::strcmp(a, "--test-disable")) out.test_disable = static_cast<int>(id);
+            else out.test_teleop = static_cast<int>(id);
+        } else if (!std::strcmp(a, "--focus")) {
+            const char* v = need_value(i, a);
+            if (!v) return false;
+            out.focus_window = v;
         } else {
             *error = std::string("unknown option: ") + a;
             return false;

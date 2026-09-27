@@ -10,6 +10,7 @@
 #include <basestation/proto/base.h>
 #include <basestation/proto/codec.h>
 #include <basestation/proto/lora.h>
+#include <basestation/proto/names.h>
 
 #include <boat_defs/ids.h>
 #include <boat_defs/mode.h>
@@ -27,6 +28,7 @@ namespace {
 namespace lora = basestation::lora;
 namespace base = basestation::base;
 namespace codec = basestation::codec;
+namespace names = basestation::names;
 
 void usage(std::FILE* out) {
     std::fprintf(out,
@@ -53,27 +55,6 @@ const char* type_name(uint8_t t) {
         case static_cast<uint8_t>(base::MsgType::BaseStatus): return "BaseStatus";
         default: return "unknown";
     }
-}
-
-const char* mode_name(uint8_t m) {
-    using boat::mode::Mode;
-    switch (static_cast<Mode>(m)) {
-        case Mode::MANUAL: return "MANUAL";
-        case Mode::AUTONOMOUS: return "AUTONOMOUS";
-        case Mode::RETURN_TO_HOME: return "RETURN_TO_HOME";
-        case Mode::EMERGENCY_STOP: return "EMERGENCY_STOP";
-    }
-    return "?";
-}
-
-const char* armed_name(uint8_t a) {
-    return a == static_cast<uint8_t>(boat::mode::ArmedState::ARMED) ? "ARMED"
-         : a == static_cast<uint8_t>(boat::mode::ArmedState::DISARMED) ? "DISARMED" : "?";
-}
-
-const char* gate_name(uint8_t g) {
-    return g == static_cast<uint8_t>(boat::mode::GateState::ENABLED) ? "ENABLED"
-         : g == static_cast<uint8_t>(boat::mode::GateState::TRIPPED) ? "TRIPPED" : "?";
 }
 
 std::string id_str(uint8_t id) {
@@ -132,8 +113,8 @@ std::string decode(const wirelink::Frame& f) {
             lora::Status m{};
             if (codec::unpack(f, m)) {
                 return fmt("tx_id=%u mode=%s armed=%s gate=%s faults=0x%04x heading=%.1f gs_rssi=%.1f gs_snr=%.1f",
-                           unsigned(m.tx_id), mode_name(m.mode), armed_name(m.armed),
-                           gate_name(m.gate_state), unsigned(m.fault_flags), double(m.heading_deg),
+                           unsigned(m.tx_id), names::mode_name(m.mode).c_str(),
+                           names::armed_name(m.armed).c_str(), names::gate_name(m.gate_state).c_str(), unsigned(m.fault_flags), double(m.heading_deg),
                            double(m.gs_rssi), double(m.gs_snr));
             }
             break;
@@ -142,7 +123,8 @@ std::string decode(const wirelink::Frame& f) {
             lora::SetMode m{};
             if (codec::unpack(f, m)) {
                 return "rx_id=" + id_str(m.rx_id) +
-                       fmt(" mode=%s armed=%s", mode_name(m.mode), armed_name(m.armed));
+                       fmt(" mode=%s armed=%s", names::mode_name(m.mode).c_str(),
+                           names::armed_name(m.armed).c_str());
             }
             break;
         }

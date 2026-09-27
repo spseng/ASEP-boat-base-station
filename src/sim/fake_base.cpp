@@ -10,6 +10,7 @@
 #include <basestation/proto/base.h>
 #include <basestation/proto/codec.h>
 #include <basestation/proto/lora.h>
+#include <basestation/proto/names.h>
 
 #include <boat_defs/ids.h>
 #include <boat_defs/mode.h>
@@ -50,6 +51,7 @@ using boat::mode::Mode;
 namespace lora = basestation::lora;
 namespace base = basestation::base;
 namespace codec = basestation::codec;
+namespace names = basestation::names;
 
 volatile std::sig_atomic_t g_stop = 0;
 
@@ -67,6 +69,8 @@ struct Options {
     bool quiet = false;
     bool rxinfo = true;
     bool basestatus = true;
+    bool start_auto = false;   // --start-mode auto
+    double time_scale = 1.0;   // --time-scale
 };
 
 void usage(std::FILE* out) {
@@ -87,6 +91,10 @@ void usage(std::FILE* out) {
         "  --quiet          do not print received commands\n"
         "  --no-rxinfo      do not send base::RxInfo after relayed frames\n"
         "  --no-basestatus  do not send base::BaseStatus\n"
+        "  --start-mode M   manual (default: MANUAL + DISARMED, boats drift) or\n"
+        "                   auto (AUTONOMOUS + ARMED, boats wander; for demos/screenshots)\n"
+        "  --time-scale F   run boat motion F times faster than real time (default 1;\n"
+        "                   radio timing is unchanged; for demos/screenshots)\n"
         "  --help           show this help\n",
         static_cast<int>(boat::ids::BOAT_ID_MAX));
 }
@@ -124,6 +132,13 @@ int parse_args(int argc, char** argv, Options& o) {
             o.rxinfo = false;
         } else if (a == "--no-basestatus") {
             o.basestatus = false;
+        } else if (a == "--start-mode") {
+            ok = value(v);
+            if (ok && std::strcmp(v, "auto") == 0) o.start_auto = true;
+            else if (ok && std::strcmp(v, "manual") == 0) o.start_auto = false;
+            else ok = false;
+        } else if (a == "--time-scale") {
+            ok = value(v) && parse_double(v, 0.1, 100, o.time_scale);
         } else if (a == "--boats") {
             ok = value(v) && parse_double(v, 1, boat::ids::BOAT_ID_MAX, d) && d == static_cast<int>(d);
             o.boats = static_cast<int>(d);
@@ -157,16 +172,6 @@ int parse_args(int argc, char** argv, Options& o) {
     return 0;
 }
 
-const char* mode_name(uint8_t m) {
-    switch (static_cast<Mode>(m)) {
-        case Mode::MANUAL: return "MANUAL";
-        case Mode::AUTONOMOUS: return "AUTONOMOUS";
-        case Mode::RETURN_TO_HOME: return "RETURN_TO_HOME";
-        case Mode::EMERGENCY_STOP: return "EMERGENCY_STOP";
-    }
-    return "?";
-}
-
 std::string target(uint8_t rx_id) {
     return rx_id == boat::ids::BROADCAST_ID ? "ALL" : std::to_string(rx_id);
 }
@@ -182,6 +187,10 @@ public:
             sim::SimBoat& b = world_.boats()[i];
             b.next_slot_s = 0.05 + slot * static_cast<double>(i);
             b.next_status_s = b.next_slot_s;
+            if (opt_.start_auto) {
+                b.mode = Mode::AUTONOMOUS;
+                b.armed = ArmedState::ARMED;
+            }
         }
     }
 
@@ -214,8 +223,11 @@ public:
 private:
     void tick(double now) {
         now_ = now;
-        world_.step(now);
-        world_.maybe_toggle_fault(now);
+        // Boat motion (and the fault schedule) runs on scaled "world" time;
+        // radio slots and BaseStatus stay on real time.
+        world_now_ = now * opt_.time_scale;
+        world_.step(world_now_);
+        world_.maybe_toggle_fault(world_now_);
 
         const double period = 1.0 / opt_.rate_hz;
         for (sim::SimBoat& b : world_.boats()) {
@@ -260,7 +272,7 @@ private:
         m.self.lat = g.lat;
         m.self.lon = g.lon;
         m.self.scalar = world_.scalar_at(b.north_m, b.east_m);
-        m.self.age_ms = static_cast<uint32_t>((now_ - b.fix_time_s) * 1000.0);
+        m.self.age_ms = static_cast<uint32_t>((world_now_ - b.fix_time_s) / opt_.time_scale * 1000.0);
         send_from_boat(b, m);
     }
 
@@ -369,16 +381,18 @@ private:
             case lora::MsgType::SetMode: {
                 lora::SetMode m{};
                 if (!codec::unpack(f, m)) break;
-                const bool valid = m.mode <= static_cast<uint8_t>(Mode::EMERGENCY_STOP) &&
-                                   m.armed <= static_cast<uint8_t>(ArmedState::ARMED);
+                // Any mode value is accepted (newer firmware may know modes
+                // this build does not); unknown modes hold still, like
+                // EMERGENCY_STOP (see sim_world.cpp). Armed is binary.
+                const bool valid = m.armed <= static_cast<uint8_t>(ArmedState::ARMED);
                 const std::string heard = !valid ? "-" : deliver(m.rx_id, [&](sim::SimBoat& b) {
                     b.mode = static_cast<Mode>(m.mode);
                     b.armed = static_cast<ArmedState>(m.armed);
                     b.status_now = true;
                 });
                 log_rx("RX SetMode rx=%s mode=%s armed=%s seq=%u heard=%s%s\n",
-                       target(m.rx_id).c_str(), mode_name(m.mode),
-                       m.armed ? "ARMED" : "DISARMED", unsigned(f.seq), heard.c_str(),
+                       target(m.rx_id).c_str(), names::mode_name(m.mode).c_str(),
+                       names::armed_name(m.armed).c_str(), unsigned(f.seq), heard.c_str(),
                        valid ? "" : " (invalid, ignored)");
                 return;
             }
@@ -388,7 +402,7 @@ private:
                 const std::string heard = deliver(m.rx_id, [&](sim::SimBoat& b) {
                     b.cmd_lin_mm = m.lin_vel;
                     b.cmd_ang_mrad = m.ang_vel;
-                    b.cmd_time_s = now_;
+                    b.cmd_time_s = world_now_;
                 });
                 log_rx("RX Command rx=%s lin=%dmm/s ang=%dmrad/s seq=%u heard=%s\n",
                        target(m.rx_id).c_str(), int(m.lin_vel), int(m.ang_vel), unsigned(f.seq), heard.c_str());
@@ -438,6 +452,7 @@ private:
     uint32_t rx_bad_ = 0;
     uint32_t tx_count_ = 0;
     double now_ = 0;
+    double world_now_ = 0;
     double next_base_s_ = 0.5;
 };
 

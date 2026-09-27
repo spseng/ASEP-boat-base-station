@@ -114,7 +114,11 @@ void World::integrate(SimBoat& b, double dt, double now_s) {
     double tau = 0.5;
     const bool can_drive = b.armed == ArmedState::ARMED && b.gate == GateState::ENABLED;
 
-    if (b.mode == Mode::EMERGENCY_STOP) {
+    // A mode this build does not know (newer firmware) holds still, like
+    // EMERGENCY_STOP, rather than guessing at a behaviour.
+    const bool known = b.mode == Mode::MANUAL || b.mode == Mode::AUTONOMOUS ||
+                       b.mode == Mode::RETURN_TO_HOME;
+    if (b.mode == Mode::EMERGENCY_STOP || !known) {
         tau = 0.3;
     } else if (!can_drive) {
         tau = 3.0;  // outputs off: the hull coasts to a stop
