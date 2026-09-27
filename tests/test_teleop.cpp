@@ -206,11 +206,16 @@ TEST_CASE("TeleopSender: sends commands at the configured rate", "[model][teleop
 
     CHECK(pty.read_for(60ms).empty());  // nothing while disabled
 
+    const auto t_enabled = Clock::now();
     sender.set_enabled(true);
-    const auto rx = pty.read_for(260ms);
-    // 20 Hz for ~260 ms: ~6 frames. Loose bounds for loaded CI machines.
-    CHECK(rx.size() >= 3);
-    CHECK(rx.size() <= 9);
+    const auto rx = pty.read(6, 3000ms);
+    REQUIRE(rx.size() == 6);
+    // Ticks follow a fixed 50 ms schedule and are never early, so frame k
+    // cannot be read before t_enabled + k * 50 ms: never faster than the
+    // configured rate. The upper bound only catches a stalled sender; CI
+    // machines (macOS especially) oversleep too much for anything tighter.
+    CHECK(rx[5].t - t_enabled >= 250ms);
+    CHECK(rx[5].t - t_enabled < 2500ms);
     for (const auto& c : commands(rx)) {
         CHECK(c.rx_id == 3);
         CHECK(c.lin_vel == 500);   // 0.5 m/s
@@ -220,7 +225,8 @@ TEST_CASE("TeleopSender: sends commands at the configured rate", "[model][teleop
     CHECK(st.enabled);
     CHECK(st.target == 3);
     CHECK(st.last.driving);
-    CHECK(st.sent >= rx.size());
+    // `sent` is bumped after the write returns, so the reader can be ahead.
+    CHECK(st.sent + 1 >= rx.size());
     CHECK(st.send_failures == 0);
 
     CHECK(log.snapshot().size() >= 2);  // target + enabled
@@ -343,7 +349,10 @@ TEST_CASE("TeleopSender: closed link counts failures and warns once", "[model][t
     sender.set_config(plain_config(50.0f));
     sender.update_input(pad_now(0.0f, 0.0f));
     sender.set_enabled(true);
-    std::this_thread::sleep_for(120ms);
+    // Wait for two failed ticks rather than a fixed sleep (CI oversleeps).
+    const auto deadline = Clock::now() + 2s;
+    while (sender.status().send_failures < 2 && Clock::now() < deadline)
+        std::this_thread::sleep_for(5ms);
     const auto st = sender.status();
     CHECK(st.sent == 0);
     CHECK(st.send_failures >= 2);

@@ -127,7 +127,10 @@ void Commander::loop() {
         if (--next->remaining <= 0)
             pending_.erase(next);
         else
-            next->due = due + cfg_.repeat_interval;
+            // From now, not from `due`: after an oversleep the remaining
+            // repeats must stay spread out (the point is to outlast a burst
+            // of LoRa loss), not go out back to back to catch up.
+            next->due = Clock::now() + cfg_.repeat_interval;
 
         // Sent under the lock so reenable() can cancel repeats without one
         // already in flight slipping out after its Reenable. A frame write
