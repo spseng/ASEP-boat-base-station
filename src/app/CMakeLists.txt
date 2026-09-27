@@ -20,6 +20,8 @@ target_link_libraries(imgui PUBLIC SDL3::SDL3-static)
 
 add_executable(asep_base_station
   main.cpp
+  cli.cpp
+  app.cpp
 )
 target_link_libraries(asep_base_station PRIVATE basestation_core imgui basestation_warnings)
 
