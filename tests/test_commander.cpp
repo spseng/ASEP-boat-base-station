@@ -147,7 +147,9 @@ TEST_CASE("Commander: reenable cancels queued disable repeats", "[model][command
         REQUIRE(cmd.disable(2));
         REQUIRE(pty.read(2, 200ms).size() == 2);
         REQUIRE(cmd.reenable(2));
-        const auto rx = pty.read_for(120ms);
+        // Wait for the Reenable plus two broadcast repeats rather than a
+        // fixed window: CI machines (macOS especially) oversleep timers.
+        const auto rx = pty.read(3, 1500ms);
         size_t broadcast = 0;
         size_t to_2_after_reenable = 0;
         bool reenabled = false;
