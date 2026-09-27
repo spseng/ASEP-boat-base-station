@@ -259,3 +259,31 @@ TEST_CASE("pack -> wrap -> unwrap -> unpack", "[codec]") {
     CHECK(s.gs_rssi == -80.0f);
     CHECK(s.gs_snr == 9.5f);
 }
+
+// ---------------------------------------------------------------------------
+// names.h: display names must degrade gracefully for values this build does
+// not know (a boat on newer firmware may report a new mode).
+// ---------------------------------------------------------------------------
+#include <basestation/proto/names.h>
+
+TEST_CASE("names: known and unknown modes", "[codec][names]") {
+    using basestation::names::mode_name;
+    CHECK(mode_name(static_cast<uint8_t>(boat::mode::Mode::MANUAL)) == "MANUAL");
+    CHECK(mode_name(static_cast<uint8_t>(boat::mode::Mode::EMERGENCY_STOP)) == "EMERGENCY_STOP");
+    CHECK(mode_name(42) == "MODE 42");
+    CHECK(basestation::names::find_mode(42) == nullptr);
+    CHECK(basestation::names::armed_name(7) == "ARMED? 7");
+    CHECK(basestation::names::gate_name(0) == "TRIPPED");
+}
+
+TEST_CASE("names: every boat_defs mode has an entry", "[codec][names]") {
+    for (uint8_t raw = 0; raw <= static_cast<uint8_t>(boat::mode::Mode::EMERGENCY_STOP); ++raw)
+        CHECK(basestation::names::find_mode(raw) != nullptr);
+}
+
+TEST_CASE("names: fault lists", "[codec][names]") {
+    namespace fault = boat::mode::fault;
+    CHECK(basestation::names::fault_list(0).empty());
+    CHECK(basestation::names::fault_list(fault::GPS_FAILURE | fault::BATTERY_LOW) == "GPS_FAILURE, BATTERY_LOW");
+    CHECK(basestation::names::fault_list(1u << 15) == "BIT15");
+}

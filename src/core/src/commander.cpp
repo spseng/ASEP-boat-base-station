@@ -1,27 +1,13 @@
 #include <basestation/core/commander.h>
 
 #include <basestation/proto/lora.h>
+#include <basestation/proto/names.h>
 
 #include <boat_defs/ids.h>
 
 #include <algorithm>
 
 namespace basestation {
-
-namespace {
-
-const char* mode_name(boat::mode::Mode m) {
-    using boat::mode::Mode;
-    switch (m) {
-    case Mode::MANUAL: return "MANUAL";
-    case Mode::AUTONOMOUS: return "AUTONOMOUS";
-    case Mode::RETURN_TO_HOME: return "RETURN_TO_HOME";
-    case Mode::EMERGENCY_STOP: return "EMERGENCY_STOP";
-    }
-    return "MODE(?)";
-}
-
-}  // namespace
 
 Commander::Commander(LinkSession& link, EventLog* events) : link_(link), events_(events) {
     thread_ = std::thread([this] { loop(); });
@@ -112,8 +98,8 @@ bool Commander::set_mode(uint8_t rx_id, boat::mode::Mode mode, boat::mode::Armed
     const lora::SetMode msg{rx_id, static_cast<uint8_t>(mode), static_cast<uint8_t>(armed)};
     const bool ok = link_.send_msg(msg);
     if (events_) {
-        const std::string what = std::string("SET_MODE ") + mode_name(mode) +
-                                 (armed == boat::mode::ArmedState::ARMED ? " ARMED" : " DISARMED");
+        const std::string what = "SET_MODE " + names::mode_name(static_cast<uint8_t>(mode)) + " " +
+                                 names::armed_name(static_cast<uint8_t>(armed));
         if (ok)
             events_->info("Sent " + what + " to " + target_name(rx_id));
         else

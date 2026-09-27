@@ -103,7 +103,30 @@ boat and per type from them. The UI's default serial rate is
 
 ---
 
-## 4. Minor / for information
+## 4. Modes: adding new ones (e.g. calibration)
+
+`SetMode {rx_id, mode, armed}` and `Status.mode` carry the raw `uint8_t`
+value of `boat::mode::Mode`, so adding a mode needs **no protocol change**:
+
+1. Add the value to `boat_defs/mode.h` upstream, e.g. `CALIBRATION = 4`.
+2. Handle it on the boat (the Pi's `mode_manager`).
+3. Add one line to `MODES` in `src/proto/basestation/proto/names.h` here
+   (name + tooltip). It then shows up in the UI's mode picker.
+
+Until step 3 is done the base station still works with the new mode: a
+reported mode it doesn't know is shown as `MODE 4`, and the *Set mode*
+picker has an "Other (raw value)" entry that sends any number 0–255.
+
+Keep "armed" separate from mode, as it is now: a boat can be in
+AUTONOMOUS but disarmed, which is the safe way to switch modes before
+letting the thrusters run.
+
+If a future mode needs parameters (e.g. which sensor to calibrate), that's
+the point to add a dedicated message instead of stretching `SetMode`.
+
+---
+
+## 5. Minor / for information
 
 - **`Link::feed` cannot report corrupt frames.** It returns `nullopt` for
   both "frame not finished" and "frame failed CRC/COBS", so a receiver can't

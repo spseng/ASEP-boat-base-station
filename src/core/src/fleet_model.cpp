@@ -2,6 +2,7 @@
 
 #include <basestation/core/geo.h>
 #include <basestation/proto/codec.h>
+#include <basestation/proto/names.h>
 
 #include <boat_defs/ids.h>
 #include <boat_defs/mode.h>
@@ -19,42 +20,6 @@ constexpr double COURSE_MIN_BASELINE_M = 2.0;
 constexpr size_t COURSE_MAX_LOOKBACK = 64;
 
 std::string boat_name(uint8_t id) { return "Boat " + std::to_string(id); }
-
-std::string mode_name(uint8_t m) {
-    using boat::mode::Mode;
-    switch (static_cast<Mode>(m)) {
-    case Mode::MANUAL: return "MANUAL";
-    case Mode::AUTONOMOUS: return "AUTONOMOUS";
-    case Mode::RETURN_TO_HOME: return "RETURN_TO_HOME";
-    case Mode::EMERGENCY_STOP: return "EMERGENCY_STOP";
-    }
-    return "MODE(" + std::to_string(m) + ")";
-}
-
-std::string fault_names(uint16_t bits) {
-    namespace fault = boat::mode::fault;
-    static constexpr struct {
-        uint16_t bit;
-        const char* name;
-    } NAMES[] = {
-        {fault::GPS_FAILURE, "GPS_FAILURE"},
-        {fault::COMMUNICATION_FAILURE, "COMMUNICATION_FAILURE"},
-        {fault::MOTOR_FAILURE, "MOTOR_FAILURE"},
-        {fault::BATTERY_LOW, "BATTERY_LOW"},
-        {fault::SENSOR_FAILURE, "SENSOR_FAILURE"},
-    };
-    std::string out;
-    for (int i = 0; i < 16; ++i) {
-        const uint16_t bit = static_cast<uint16_t>(1u << i);
-        if (!(bits & bit)) continue;
-        const char* name = nullptr;
-        for (const auto& n : NAMES)
-            if (n.bit == bit) name = n.name;
-        if (!out.empty()) out += ", ";
-        out += name ? std::string(name) : "BIT" + std::to_string(i);
-    }
-    return out;
-}
 
 bool is_boat_id(uint8_t id) {
     return id >= boat::ids::BOAT_ID_MIN && id <= boat::ids::BOAT_ID_MAX;
@@ -312,7 +277,7 @@ void FleetModel::ingest(const RxFrame& rx) {
                     events_->warn(name + " gate state " + std::to_string(msg.gate_state));
             }
             if (prev && prev->mode != msg.mode)
-                events_->info(name + " mode " + mode_name(prev->mode) + " -> " + mode_name(msg.mode));
+                events_->info(name + " mode " + names::mode_name(prev->mode) + " -> " + names::mode_name(msg.mode));
             if (prev && prev->armed != msg.armed) {
                 const bool armed = msg.armed == static_cast<uint8_t>(boat::mode::ArmedState::ARMED);
                 events_->info(name + (armed ? " ARMED" : " DISARMED"));
@@ -320,8 +285,8 @@ void FleetModel::ingest(const RxFrame& rx) {
             const uint16_t old_faults = prev ? prev->fault_flags : 0;
             const uint16_t set = static_cast<uint16_t>(msg.fault_flags & ~old_faults);
             const uint16_t cleared = static_cast<uint16_t>(old_faults & ~msg.fault_flags);
-            if (set) events_->warn(name + " fault: " + fault_names(set));
-            if (cleared) events_->info(name + " fault cleared: " + fault_names(cleared));
+            if (set) events_->warn(name + " fault: " + names::fault_list(set));
+            if (cleared) events_->info(name + " fault cleared: " + names::fault_list(cleared));
         }
         b.status = msg;
         b.status_time = rx.t;
