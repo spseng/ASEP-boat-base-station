@@ -141,8 +141,15 @@ void TeleopSender::loop() {
         });
         if (quit_) break;
 
+        // Fixed schedule rather than now + period: wake-up latency (large
+        // with macOS timer coalescing) must not stretch every period. After
+        // a stall, skip missed ticks instead of sending a burst.
         const auto now = Clock::now();
-        next = now + period_of(cfg_);
+        const auto period = period_of(cfg_);
+        if (now < next || now >= next + period)
+            next = now + period;  // woken early by a change, or stalled
+        else
+            next += period;
         if (status_.enabled && !was_enabled) warned = false;
         was_enabled = status_.enabled;
 

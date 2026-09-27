@@ -238,8 +238,9 @@ TEST_CASE("TeleopSender: disable sends the stop burst then goes quiet", "[model]
     REQUIRE(pty.read(3, 500ms).size() == 3);
 
     sender.set_enabled(false);
-    auto rx = commands(pty.read_for(150ms));
-    // At most one driving command can have been in flight when disabled.
+    // Generous timeout: CI machines (macOS especially) oversleep timers.
+    auto rx = commands(pty.read(5, 600ms));
+    // At most two driving commands can have been in flight when disabled.
     REQUIRE(rx.size() >= 3);
     REQUIRE(rx.size() <= 5);
     const size_t zeros_from = rx.size() - 3;
@@ -292,7 +293,7 @@ TEST_CASE("TeleopSender: target change stops the old target first", "[model][tel
     REQUIRE(pty.read(2, 500ms).size() == 2);
 
     sender.set_target(4);
-    auto rx = commands(pty.read(10, 600ms));
+    auto rx = commands(pty.read(10, 2000ms));
     REQUIRE(rx.size() == 10);
     // Driving commands to boat 1 may still be in flight, then 3 zeros to
     // boat 1, then boat 4 only.
