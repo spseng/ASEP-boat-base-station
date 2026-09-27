@@ -5,6 +5,7 @@
 
 #include <basestation/core/common.h>
 #include <basestation/core/event_log.h>
+#include <basestation/core/geo.h>
 #include <basestation/proto/base.h>
 #include <basestation/proto/lora.h>
 
@@ -88,7 +89,35 @@ struct BaseStationState {
     std::optional<base::BaseStatus> status;
     Clock::time_point status_time{};
     uint32_t reboots = 0;  // uptime_ms went backwards
+
+    // From base::BasePosition (only if the base ESP32 has a GPS).
+    std::optional<base::BasePosition> position;
+    Clock::time_point position_time{};
+
+    // The last BasePosition had a fix and a plausible position.
+    bool has_fix() const;
 };
+
+// Where the base station is, and who said so. The GPS (BasePosition with a
+// fix) wins over the position the operator set by hand, unless the operator
+// pins the manual one; a GPS fix older than max_gps_age_s no longer counts.
+// A GPS fix cached from an earlier session is the last resort.
+struct BasePositionChoice {
+    enum class Source { None, Manual, Gps, CachedGps };
+    Source source = Source::None;
+    geo::LatLon pos{};
+    bool known() const { return source != Source::None; }
+};
+
+BasePositionChoice choose_base_position(const BaseStationState& base, Clock::time_point now,
+                                        const std::optional<geo::LatLon>& manual, bool pin_manual,
+                                        const std::optional<geo::LatLon>& cached_gps,
+                                        double max_gps_age_s = 10.0);
+const char* to_string(BasePositionChoice::Source s);
+
+// (0, 0) is what a GPS without a fix reports; anything else in range is
+// accepted.
+bool plausible_position(const geo::LatLon& p);
 
 class FleetModel {
 public:

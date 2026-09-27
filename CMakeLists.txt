@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(asep_base_station LANGUAGES C CXX)
+project(asep_base_station VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,6 +13,7 @@ endif()
 option(BASESTATION_BUILD_GUI   "Build the SDL3 + Dear ImGui application" ON)
 option(BASESTATION_BUILD_TESTS "Build the unit tests"                    ON)
 option(BASESTATION_BUILD_SIM   "Build the fake base station simulator"   ON)
+option(BASESTATION_USE_CURL    "Download map tiles with libcurl if found" ON)
 
 # ---------------------------------------------------------------------------
 # Shared code from the ASEP-boat repository (git submodule, read-only).
@@ -58,6 +59,9 @@ add_library(basestation_core STATIC
   src/core/src/teleop.cpp
   src/core/src/teleop_sender.cpp
   src/core/src/commander.cpp
+  src/core/src/map_tiles.cpp
+  src/core/src/http_client.cpp
+  src/core/src/tile_service.cpp
 )
 target_include_directories(basestation_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
 target_link_libraries(basestation_core
@@ -65,6 +69,19 @@ target_link_libraries(basestation_core
   PRIVATE basestation_warnings)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(basestation_core PUBLIC util)  # openpty
+endif()
+
+# libcurl is optional: without it the map shows cached tiles only (no
+# downloads). Ubuntu: libcurl4-openssl-dev; macOS: part of the SDK.
+if(BASESTATION_USE_CURL)
+  find_package(CURL)
+endif()
+if(CURL_FOUND)
+  target_link_libraries(basestation_core PRIVATE CURL::libcurl)
+  target_compile_definitions(basestation_core PRIVATE BASESTATION_HAVE_CURL=1)
+  message(STATUS "Map tile downloads: enabled (libcurl ${CURL_VERSION_STRING})")
+else()
+  message(STATUS "Map tile downloads: DISABLED (libcurl not found; cached tiles only)")
 endif()
 
 include(cmake/Dependencies.cmake)

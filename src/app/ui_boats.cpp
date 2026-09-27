@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <optional>
 
 namespace basestation::app {
 
@@ -46,7 +47,7 @@ void App::draw_boats_table() {
                                   ImGuiTableFlags_BordersOuterH | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
                                   ImGuiTableFlags_SizingFixedFit;
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f * ui_scale_, 3.0f * ui_scale_));
-    const bool table = ImGui::BeginTable("##boats", 12, flags);
+    const bool table = ImGui::BeginTable("##boats", 13, flags);
     ImGui::PopStyleVar();
     if (table) {
         ImGui::TableSetupScrollFreeze(1, 1);
@@ -58,20 +59,32 @@ void App::draw_boats_table() {
         ImGui::TableSetupColumn("Faults");
         ImGui::TableSetupColumn("Scalar");
         ImGui::TableSetupColumn("Heading");
+        ImGui::TableSetupColumn("Range");
         ImGui::TableSetupColumn("Base hears");
         ImGui::TableSetupColumn("Boat hears");
         ImGui::TableSetupColumn("Loss");
         ImGui::TableSetupColumn("Frames", ImGuiTableColumnFlags_DefaultHide);
         // Headers drawn by hand so some can explain themselves on hover.
-        static const char* const tips[12] = {
+        // Range needs the base-station position: hidden while it is unknown
+        // (every frame: ImGui resets visibility while the table initialises),
+        // shown once when it becomes known, so the operator can still hide it.
+        constexpr int RANGE_COL = 8;
+        const bool base_known = base_pos_.known();
+        if (!base_known) ImGui::TableSetColumnEnabled(RANGE_COL, false);
+        else if (!range_col_shown_) ImGui::TableSetColumnEnabled(RANGE_COL, true);
+        range_col_shown_ = base_known;
+        const std::optional<geo::LocalFrame> base_frame =
+            base_known ? std::optional<geo::LocalFrame>(geo::LocalFrame(base_pos_.pos)) : std::nullopt;
+        static const char* const tips[13] = {
             nullptr, "Time since any frame from this boat", nullptr, nullptr, "Output gate (Disable trips it)",
             "Fault flags from the boat's Status", "SelfStatus scalar value", "Compass heading, else course over ground",
+            "Distance and bearing from the base station (for LoRa range checks)",
             "RSSI dBm / SNR dB of this boat's frames at the base station (RxInfo)",
             "RSSI dBm / SNR dB of the base station's last frame at this boat (from its Status)",
             "Frames lost, from sequence-number gaps, all message types", "Frames received from this boat"};
         // Right-click a header to show / hide columns.
         ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-        for (int col = 0; col < 12; ++col) {
+        for (int col = 0; col < 13; ++col) {
             if (!ImGui::TableSetColumnIndex(col)) continue;
             ImGui::TableHeader(ImGui::TableGetColumnName(col));
             if (tips[col] && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", tips[col]);
@@ -136,6 +149,17 @@ void App::draw_boats_table() {
             const float hdg = b.heading_deg();
             if (std::isfinite(hdg)) ImGui::Text("%03.0f°", static_cast<double>(hdg));
             else dash();
+
+            ImGui::TableNextColumn();
+            if (base_frame && b.self_status && (b.self_status->self.lat != 0 || b.self_status->self.lon != 0)) {
+                const geo::NorthEast rel =
+                    base_frame->to_local(geo::from_e7(b.self_status->self.lat, b.self_status->self.lon));
+                const double d = geo::distance_m({}, rel);
+                if (d < 10000) ImGui::Text("%.0f m %03.0f°", d, geo::course_deg({}, rel));
+                else ImGui::Text("%.1f km %03.0f°", d / 1000.0, geo::course_deg({}, rel));
+            } else {
+                dash();
+            }
 
             ImGui::TableNextColumn();
             if (b.rx_info) rssi_snr(b.rx_info->rssi, b.rx_info->snr);

@@ -30,6 +30,22 @@ std::string fmt_float(float v) {
     return buf;
 }
 
+// Enough digits for ~1 cm in latitude / longitude.
+std::string fmt_deg(double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.8f", v);
+    return buf;
+}
+
+bool parse_double(const std::string& v, double lo, double hi, double& out) {
+    char* end = nullptr;
+    errno = 0;
+    const double d = std::strtod(v.c_str(), &end);
+    if (errno || end == v.c_str() || *end || !std::isfinite(d) || d < lo || d > hi) return false;
+    out = d;
+    return true;
+}
+
 bool parse_bool(const std::string& v, bool& out) {
     if (v == "1" || v == "true" || v == "on" || v == "yes") { out = true; return true; }
     if (v == "0" || v == "false" || v == "off" || v == "no") { out = false; return true; }
@@ -105,6 +121,22 @@ std::string settings_to_string(const Settings& s) {
     o << "view.show_plots = " << (s.show_plots ? 1 : 0) << "\n";
     o << "view.show_link = " << (s.show_link ? 1 : 0) << "\n";
     o << "view.show_events = " << (s.show_events ? 1 : 0) << "\n";
+    const MapSettings& m = s.map;
+    o << "map.enabled = " << (m.enabled ? 1 : 0) << "\n";
+    o << "map.source = " << m.source << "\n";
+    o << "map.custom_url = " << m.custom_url << "\n";
+    o << "map.opacity = " << fmt_float(m.opacity) << "\n";
+    o << "map.offline = " << (m.offline ? 1 : 0) << "\n";
+    o << "map.cache_dir = " << m.cache_dir << "\n";
+    const BaseSettings& b = s.base;
+    o << "base.manual_set = " << (b.manual_set ? 1 : 0) << "\n";
+    o << "base.lat = " << fmt_deg(b.lat) << "\n";
+    o << "base.lon = " << fmt_deg(b.lon) << "\n";
+    o << "base.pin_manual = " << (b.pin_manual ? 1 : 0) << "\n";
+    o << "base.as_origin = " << (b.as_origin ? 1 : 0) << "\n";
+    o << "base.gps_cached = " << (b.gps_cached ? 1 : 0) << "\n";
+    o << "base.gps_lat = " << fmt_deg(b.gps_lat) << "\n";
+    o << "base.gps_lon = " << fmt_deg(b.gps_lon) << "\n";
     return o.str();
 }
 
@@ -175,6 +207,39 @@ bool load_settings(const std::string& path, Settings& s) {
     get_bool("view.show_plots", s.show_plots);
     get_bool("view.show_link", s.show_link);
     get_bool("view.show_events", s.show_events);
+
+    MapSettings& m = s.map;
+    get_bool("map.enabled", m.enabled);
+    if (const std::string* v = get("map.source"); v && !v->empty()) m.source = *v;
+    if (const std::string* v = get("map.custom_url")) m.custom_url = *v;
+    get_float("map.opacity", 0.05f, 1.0f, m.opacity);
+    get_bool("map.offline", m.offline);
+    if (const std::string* v = get("map.cache_dir")) m.cache_dir = *v;
+
+    // A position is only restored if both coordinates parse.
+    BaseSettings& b = s.base;
+    {
+        double lat = 0, lon = 0;
+        const std::string* vl = get("base.lat");
+        const std::string* vo = get("base.lon");
+        if (vl && vo && parse_double(*vl, -90, 90, lat) && parse_double(*vo, -180, 180, lon)) {
+            b.lat = lat;
+            b.lon = lon;
+            get_bool("base.manual_set", b.manual_set);
+        }
+    }
+    get_bool("base.pin_manual", b.pin_manual);
+    get_bool("base.as_origin", b.as_origin);
+    {
+        double lat = 0, lon = 0;
+        const std::string* vl = get("base.gps_lat");
+        const std::string* vo = get("base.gps_lon");
+        if (vl && vo && parse_double(*vl, -90, 90, lat) && parse_double(*vo, -180, 180, lon)) {
+            b.gps_lat = lat;
+            b.gps_lon = lon;
+            get_bool("base.gps_cached", b.gps_cached);
+        }
+    }
     return true;
 }
 

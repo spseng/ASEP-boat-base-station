@@ -33,9 +33,15 @@ if(BASESTATION_BUILD_GUI)
     GIT_TAG        v1.0
     GIT_SHALLOW    TRUE)
 
-  # imgui and implot ship no CMakeLists.txt, so MakeAvailable only
+  # --- stb_image (PNG / JPEG decoding of map tiles) -------------------------
+  # stb has no releases; pinned to a commit.
+  FetchContent_Declare(stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG        2c980bb59875b0d32144a71867fbdebb2f77cd20)
+
+  # imgui, implot and stb ship no CMakeLists.txt, so MakeAvailable only
   # downloads them; their targets are defined in src/app/CMakeLists.txt.
-  FetchContent_MakeAvailable(SDL3 imgui implot)
+  FetchContent_MakeAvailable(SDL3 imgui implot stb)
 endif()
 
 if(BASESTATION_BUILD_TESTS)

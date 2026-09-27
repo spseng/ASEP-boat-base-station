@@ -16,6 +16,10 @@ const char* usage() {
            "  --size WxH              initial window size in pixels\n"
            "  --screenshot FILE.png   save a screenshot after a delay, then exit\n"
            "  --screenshot-after S    delay before the screenshot (default 3)\n"
+           "  --tile-cache DIR        map tile cache for this session (default: app data dir/tiles)\n"
+           "  --map URL               show the map from a tile server, URL with {z} {x} {y}\n"
+           "                          (remembered, like choosing Custom in Map...)\n"
+           "  --base LAT,LON          set the base-station position (remembered)\n"
            "  -h, --help              show this help\n"
            "\n"
            "For screenshots / testing:\n"
@@ -78,6 +82,24 @@ bool parse_cli(int argc, char** argv, Options& out, std::string* error) {
             if (!v) return false;
             out.screenshot_after_s = std::atof(v);
             if (out.screenshot_after_s < 0) out.screenshot_after_s = 0;
+        } else if (!std::strcmp(a, "--tile-cache")) {
+            const char* v = need_value(i, a);
+            if (!v) return false;
+            out.tile_cache = v;
+        } else if (!std::strcmp(a, "--map")) {
+            const char* v = need_value(i, a);
+            if (!v) return false;
+            out.map_url = v;
+        } else if (!std::strcmp(a, "--base")) {
+            const char* v = need_value(i, a);
+            if (!v) return false;
+            char tail = 0;
+            if (std::sscanf(v, "%lf,%lf%c", &out.base_lat, &out.base_lon, &tail) != 2 || out.base_lat < -90 ||
+                out.base_lat > 90 || out.base_lon < -180 || out.base_lon > 180) {
+                *error = std::string("invalid position (expected LAT,LON in degrees): ") + v;
+                return false;
+            }
+            out.base_set = true;
         } else if (!std::strcmp(a, "--fresh")) {
             out.fresh = true;
         } else if (!std::strcmp(a, "--select") || !std::strcmp(a, "--test-disable") ||

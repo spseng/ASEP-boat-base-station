@@ -90,8 +90,9 @@ LoRa:
 |---|---|---|
 | `0x80` | `RxInfo {rssi, snr}` | Immediately after each relayed LoRa frame. The UI attaches it to the frame just before it. |
 | `0x81` | `BaseStatus {uptime_ms, rx_ok, rx_bad, tx_count}` | About 1 Hz. |
+| `0x82` | `BasePosition {int32 lat, int32 lon (1e-7 deg), uint8 fix_quality (0 = no fix), uint8 satellites}` | About 1 Hz, only if the base ESP32 has a GPS. A fix overrides the position set by hand in the UI. |
 
-Both are optional; the UI still works if the ESP32 never sends them.
+All are optional; the UI still works if the ESP32 never sends them.
 If you agree, add a comment to `lora.h` (or `framing.h`) reserving
 `0x80–0xFF` so a future LoRa type never collides.
 

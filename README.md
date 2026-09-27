@@ -10,6 +10,9 @@ frames between the laptop and the boats over LoRa. With it you can:
 - teleoperate a boat with an **Xbox controller** (deadman button, rate-limited,
   fails to zero)
 - send **Disable** / **Re-enable** / **Set mode** to one boat or to all
+- show the boats over a **map** (satellite or OpenStreetMap) that is cached
+  on disk, so it also works at a lake without internet
+- mark the **base station** and show each boat's range and bearing from it
 - record every frame to a session log for later analysis
 
 ![Overview](docs/screenshots/overview.png)
@@ -22,7 +25,7 @@ read-only as a git submodule for the shared message definitions.
  laptop (this app) ──USB serial──> base-station ESP32 ──LoRa──> boats (ESP32 + Pi)
                    <─────────────                    <────────
           wirelink frames, relayed unchanged in both directions
-          (+ optional RxInfo / BaseStatus from the base ESP32 itself)
+          (+ optional RxInfo / BaseStatus / BasePosition from the base ESP32 itself)
 ```
 
 ---
@@ -30,8 +33,11 @@ read-only as a git submodule for the shared message definitions.
 ## Building
 
 You need a C++17 compiler, CMake ≥ 3.22, Ninja (optional) and git. SDL3,
-Dear ImGui, ImPlot and Catch2 are downloaded and built automatically the
-first time you configure. The first build takes a few minutes, mostly SDL3.
+Dear ImGui, ImPlot, stb_image and Catch2 are downloaded and built
+automatically the first time you configure. The first build takes a few
+minutes, mostly SDL3. libcurl (for downloading map tiles) comes from the
+system; without it the app still builds, but the map shows only tiles that
+are already cached.
 
 ```sh
 git clone --recursive https://github.com/spseng/ASEP-boat-base-station.git
@@ -46,16 +52,17 @@ ctest --test-dir build          # optional: run the tests
 ### macOS
 
 ```sh
-xcode-select --install           # compiler
+xcode-select --install           # compiler (libcurl is part of the macOS SDK)
 brew install cmake ninja
 ```
 
 ### Ubuntu 24.04
 
-SDL3 needs the X11/Wayland development headers to build:
+SDL3 needs the X11/Wayland development headers to build; libcurl4-openssl-dev
+is for map downloads:
 
 ```sh
-sudo apt install build-essential cmake ninja-build git \
+sudo apt install build-essential cmake ninja-build git libcurl4-openssl-dev \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
   libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev wayland-protocols \
   libegl1-mesa-dev libgl1-mesa-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev
@@ -66,7 +73,9 @@ out and back in.
 
 Build options (all ON by default): `-DBASESTATION_BUILD_GUI=OFF` builds only
 the core, simulator and tests (no SDL needed), `-DBASESTATION_BUILD_TESTS`,
-`-DBASESTATION_BUILD_SIM`.
+`-DBASESTATION_BUILD_SIM`, `-DBASESTATION_USE_CURL=OFF` (no map downloads,
+even if libcurl is installed). CMake prints `Map tile downloads: enabled` or
+`DISABLED` when it configures.
 
 ---
 
@@ -95,7 +104,8 @@ simulated GPS fault comes and goes.
 ```
 
 `--link /tmp/asep-sim` also creates a stable symlink to the port.
-`--start-mode auto` starts the boats wandering. `--help` lists every option
+`--start-mode auto` starts the boats wandering. `--base-gps` makes the base
+station report a GPS position (see below). `--help` lists every option
 (boat count, loss, corruption, rates, origin).
 
 ### Session logs
@@ -107,6 +117,60 @@ the app. `asep_log_dump` turns a log into CSV:
 ```sh
 ./build/src/sim/asep_log_dump session.aseplog > session.csv
 ```
+
+---
+
+## Offline map and base-station position
+
+![Map layer and base station](docs/screenshots/map.png)
+
+The Fleet view can draw map tiles under the boats: tick **Map** above it,
+and pick the source in **Map...**:
+
+| Source | Notes |
+|---|---|
+| Esri World Imagery (satellite) | Esri's terms of use apply. |
+| OpenStreetMap | Its [tile usage policy](https://operations.osmfoundation.org/policies/tiles/) discourages bulk downloading: download one lake, not a region. |
+| Custom | Any `{z}/{x}/{y}` tile server, e.g. one you run yourself. |
+
+The attribution is shown in the corner of the map whenever tiles are
+visible. More built-in sources are one line each in
+`src/core/src/map_tiles.cpp`.
+
+**Before going to the lake**, while you still have internet: set the base
+station (below) or pan the map to the lake, then **Map... > Download
+area...**. Choose the current view or a radius around the base station and
+a zoom range (current zoom up to 19 is typical); the window shows the tile
+count and size before you start, refuses more than 3000 tiles, and shows
+progress with a Cancel button. At the lake, tick **Offline** in Map... so the
+app never tries the network; it then shows only cached tiles. (Without
+Offline it also works: tiles that are not cached are simply not shown, and
+failed downloads are not retried for a while.)
+
+Tiles are cached in `<app data dir>/tiles/<source>/<z>/<x>/<y>.<ext>`
+(`~/.local/share/spseng/asep-base-station/tiles` on Ubuntu,
+`~/Library/Application Support/spseng/asep-base-station/tiles` on macOS).
+Map... shows the cache size, can clear it, and can move it to another
+folder (a USB stick, say); `--tile-cache DIR` overrides it for one session.
+Cached tiles are never downloaded again. Downloads identify the app with its
+User-Agent, run at most two at a time and about 8 per second, and pause
+after repeated network errors.
+
+**Base-station position.** Set it in **Base...** by typing lat/lon, with
+**Set from map** (click the Fleet view or drag the marker), **Use view
+centre**, or by right-clicking the map > *Set base station here*. It is saved
+and restored at startup (`--base LAT,LON` sets it from the command line).
+It is drawn as a house marked BASE; before any boat is heard the view is
+centred on it, so the map is useful right away. The Boats table gets a
+**Range** column: distance and bearing from the base station to each boat,
+for LoRa range checks. *Use base station as map origin* keeps the Fleet
+view's 0,0 on the base station in every session.
+
+If the base ESP32 ever gets a GPS, it can send `BasePosition` (0x82, see
+[Protocol](#protocol)); a fix then overrides the hand-set position (the
+marker's door turns green) unless *Prefer manual position* is ticked. The
+last GPS fix is remembered for the next session. `asep_fake_base --base-gps`
+simulates this.
 
 ---
 
@@ -163,6 +227,7 @@ lost packets per boat and per message type from them.
 | 5 | `SetMode {rx_id, mode, armed}` | land → boat | 〃 |
 | 0x80 | `RxInfo {rssi, snr}` | base ESP32 → PC | `src/proto/basestation/proto/base.h` |
 | 0x81 | `BaseStatus {uptime, rx_ok, rx_bad, tx_count}` | base ESP32 → PC | 〃 |
+| 0x82 | `BasePosition {lat, lon (1e-7 deg), fix_quality, satellites}` | base ESP32 → PC (optional GPS) | 〃 |
 
 `rx_id` 255 (`boat::ids::BROADCAST_ID`) addresses every boat.
 
@@ -178,12 +243,13 @@ repository needs to change is listed in
 ```
 src/proto/   message definitions + codec (header-only)
 src/core/    everything that is not GUI: serial port, frame splitting,
-             link session, session log, fleet model, teleop, commands
+             link session, session log, fleet model, teleop, commands,
+             map tiles (tile math, cache, downloader)
 src/app/     the SDL3 + Dear ImGui + ImPlot application
 src/sim/     asep_fake_base simulator, asep_log_dump
 tests/       Catch2 unit + integration tests (pty-backed, no hardware)
 external/    ASEP-boat submodule (read-only)
-docs/        screenshots
+docs/        screenshots (+ a synthetic tile server for them)
 ```
 
 The core has no GUI dependency and is covered by the tests, which include
@@ -199,3 +265,6 @@ tested in CI on macOS. Still to be checked on the real setup:
 - the base-station ESP32 firmware, which isn't written yet (see
   WIRELINK_CHANGES.md §3 for what the app expects of it)
 - real LoRa loss and RSSI behaviour
+- the real Esri and OpenStreetMap tile servers: the build machine cannot reach
+  them, so downloads were tested against a local tile server (the tile URLs
+  and formats are the documented ones)

@@ -24,6 +24,7 @@ const char* msg_type_name(uint8_t type) {
     case static_cast<uint8_t>(lora::MsgType::SetMode): return "SetMode";
     case static_cast<uint8_t>(base::MsgType::RxInfo): return "RxInfo";
     case static_cast<uint8_t>(base::MsgType::BaseStatus): return "BaseStatus";
+    case static_cast<uint8_t>(base::MsgType::BasePosition): return "BasePosition";
     default: return "unknown";
     }
 }

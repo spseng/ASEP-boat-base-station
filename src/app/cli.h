@@ -16,6 +16,11 @@ struct Options {
     int width = 0;              // --size WxH
     int height = 0;
     bool show_help = false;
+    std::string tile_cache;     // --tile-cache DIR: map tile cache (this session)
+    std::string map_url;        // --map URL: show the map from this tile URL template
+    bool base_set = false;      // --base LAT,LON: set the manual base-station position
+    double base_lat = 0;
+    double base_lon = 0;
 
     // For screenshots / testing.
     bool fresh = false;         // --fresh: ignore saved settings + layout, save nothing

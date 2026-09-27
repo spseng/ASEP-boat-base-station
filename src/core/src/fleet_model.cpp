@@ -25,19 +25,51 @@ bool is_boat_id(uint8_t id) {
     return id >= boat::ids::BOAT_ID_MIN && id <= boat::ids::BOAT_ID_MAX;
 }
 
-// (0, 0) is what a GPS without a fix reports; plotting it would drag the
-// trail across the globe.
-bool plausible_position(const geo::LatLon& p) {
-    if (p.lat_deg == 0.0 && p.lon_deg == 0.0) return false;
-    return p.lat_deg >= -90.0 && p.lat_deg <= 90.0 && p.lon_deg >= -180.0 && p.lon_deg <= 180.0;
-}
-
 template <class T>
 void prune_samples(std::deque<T>& d, double cutoff) {
     while (!d.empty() && d.front().t < cutoff) d.pop_front();
 }
 
 }  // namespace
+
+// Plotting (0, 0) would drag a trail across the globe.
+bool plausible_position(const geo::LatLon& p) {
+    if (p.lat_deg == 0.0 && p.lon_deg == 0.0) return false;
+    return p.lat_deg >= -90.0 && p.lat_deg <= 90.0 && p.lon_deg >= -180.0 && p.lon_deg <= 180.0;
+}
+
+// ---------------------------------------------------------------------------
+// Base station position
+// ---------------------------------------------------------------------------
+
+bool BaseStationState::has_fix() const {
+    return position && position->fix_quality != 0 &&
+           plausible_position(geo::from_e7(position->lat, position->lon));
+}
+
+BasePositionChoice choose_base_position(const BaseStationState& base, Clock::time_point now,
+                                        const std::optional<geo::LatLon>& manual, bool pin_manual,
+                                        const std::optional<geo::LatLon>& cached_gps,
+                                        double max_gps_age_s) {
+    using Source = BasePositionChoice::Source;
+    const bool manual_ok = manual && plausible_position(*manual);
+    if (manual_ok && pin_manual) return {Source::Manual, *manual};
+    if (base.has_fix() && std::chrono::duration<double>(now - base.position_time).count() <= max_gps_age_s)
+        return {Source::Gps, geo::from_e7(base.position->lat, base.position->lon)};
+    if (manual_ok) return {Source::Manual, *manual};
+    if (cached_gps && plausible_position(*cached_gps)) return {Source::CachedGps, *cached_gps};
+    return {};
+}
+
+const char* to_string(BasePositionChoice::Source s) {
+    switch (s) {
+    case BasePositionChoice::Source::None: return "not set";
+    case BasePositionChoice::Source::Manual: return "manual";
+    case BasePositionChoice::Source::Gps: return "base GPS";
+    case BasePositionChoice::Source::CachedGps: return "last base GPS fix (cached)";
+    }
+    return "?";
+}
 
 // ---------------------------------------------------------------------------
 // SeqStats
@@ -183,6 +215,23 @@ void FleetModel::ingest(const RxFrame& rx) {
             }
             base_.status = st;
             base_.status_time = rx.t;
+            return;
+        }
+        case base::MsgType::BasePosition: {
+            base::BasePosition pos{};
+            if (!codec::unpack(f, pos)) {
+                ++counters_.decode_errors;
+                return;
+            }
+            const bool had_fix = base_.has_fix();
+            base_.position = pos;
+            base_.position_time = rx.t;
+            if (events_ && had_fix != base_.has_fix()) {
+                if (base_.has_fix())
+                    events_->info("Base station GPS fix (" + std::to_string(pos.satellites) + " satellites)");
+                else
+                    events_->warn("Base station GPS lost its fix");
+            }
             return;
         }
         }

@@ -5,7 +5,7 @@
 // The base-station ESP32 relays wirelink frames between USB serial and LoRa
 // unchanged. In addition it may emit the messages below, which are never
 // transmitted over the air. Their type numbers start at 0x80 so they can
-// never collide with a LoRa MsgType. Both are optional: the app works
+// never collide with a LoRa MsgType. All are optional: the app works
 // without them and simply shows nothing in the corresponding panels.
 
 #include <cstdint>
@@ -17,6 +17,7 @@ namespace basestation::base {
     enum class MsgType : uint8_t {
         RxInfo     = 0x80,
         BaseStatus = 0x81,
+        BasePosition = 0x82,
     };
 
     constexpr bool is_local_type(uint8_t type) { return type >= FIRST_LOCAL_TYPE; }
@@ -43,5 +44,19 @@ namespace basestation::base {
 
         template <class F>
         void fields(F& f) { f(uptime_ms); f(rx_ok); f(rx_bad); f(tx_count); }
+    };
+
+    // Base-station position, ~1 Hz, only if the base ESP32 has a GPS. When
+    // it reports a fix it overrides the position the operator set by hand
+    // (unless they pin the manual one). lat/lon are meaningless without a fix.
+    struct BasePosition {
+        constexpr static MsgType TYPE = MsgType::BasePosition;
+        int32_t lat;          // 1e-7 deg
+        int32_t lon;          // 1e-7 deg
+        uint8_t fix_quality;  // 0 = no fix (NMEA GGA quality otherwise)
+        uint8_t satellites;
+
+        template <class F>
+        void fields(F& f) { f(lat); f(lon); f(fix_quality); f(satellites); }
     };
 }  // namespace basestation::base

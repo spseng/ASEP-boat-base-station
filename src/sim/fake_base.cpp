@@ -69,6 +69,7 @@ struct Options {
     bool quiet = false;
     bool rxinfo = true;
     bool basestatus = true;
+    bool base_gps = false;     // --base-gps
     bool start_auto = false;   // --start-mode auto
     double time_scale = 1.0;   // --time-scale
 };
@@ -91,6 +92,8 @@ void usage(std::FILE* out) {
         "  --quiet          do not print received commands\n"
         "  --no-rxinfo      do not send base::RxInfo after relayed frames\n"
         "  --no-basestatus  do not send base::BaseStatus\n"
+        "  --base-gps       send base::BasePosition at 1 Hz, as if the base ESP32 had a\n"
+        "                   GPS: no fix for the first second, then the origin +- ~1 m\n"
         "  --start-mode M   manual (default: MANUAL + DISARMED, boats drift) or\n"
         "                   auto (AUTONOMOUS + ARMED, boats wander; for demos/screenshots)\n"
         "  --time-scale F   run boat motion F times faster than real time (default 1;\n"
@@ -132,6 +135,8 @@ int parse_args(int argc, char** argv, Options& o) {
             o.rxinfo = false;
         } else if (a == "--no-basestatus") {
             o.basestatus = false;
+        } else if (a == "--base-gps") {
+            o.base_gps = true;
         } else if (a == "--start-mode") {
             ok = value(v);
             if (ok && std::strcmp(v, "auto") == 0) o.start_auto = true;
@@ -250,6 +255,24 @@ private:
             s.tx_count = tx_count_;
             send_local(s);
             next_base_s_ += 1.0;
+        }
+
+        if (opt_.base_gps && now >= next_gps_s_) {
+            // The radio model puts the base station at the origin; report
+            // that with a little GPS noise once the receiver has a fix.
+            base::BasePosition p{};
+            if (now >= 1.0) {
+                std::normal_distribution<double> noise(0.0, 0.7);
+                const auto g = to_geo(noise(world_.rng()), noise(world_.rng()));
+                p.lat = g.lat;
+                p.lon = g.lon;
+                p.fix_quality = 1;
+                p.satellites = static_cast<uint8_t>(std::uniform_int_distribution<int>(8, 12)(world_.rng()));
+            } else {
+                p.satellites = 2;
+            }
+            send_local(p);
+            next_gps_s_ += 1.0;
         }
     }
 
@@ -454,6 +477,7 @@ private:
     double now_ = 0;
     double world_now_ = 0;
     double next_base_s_ = 0.5;
+    double next_gps_s_ = 0.3;
 };
 
 }  // namespace

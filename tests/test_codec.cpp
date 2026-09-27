@@ -129,6 +129,14 @@ TEST_CASE("base-local messages round-trip", "[codec]") {
     CHECK(st.rx_ok == 12u);
     CHECK(st.rx_bad == 3u);
     CHECK(st.tx_count == 0x01020304u);
+    const auto pos = round_trip(base::BasePosition{-337123456, 1512345678, 2, 11});
+    CHECK(pos.lat == -337123456);
+    CHECK(pos.lon == 1512345678);
+    CHECK(pos.fix_quality == 2);
+    CHECK(pos.satellites == 11);
+    CHECK(static_cast<uint8_t>(base::BasePosition::TYPE) == 0x82);
+    CHECK(base::is_local_type(static_cast<uint8_t>(base::BasePosition::TYPE)));
+
     CHECK(base::is_local_type(static_cast<uint8_t>(base::RxInfo::TYPE)));
     CHECK_FALSE(base::is_local_type(static_cast<uint8_t>(lora::SetMode::TYPE)));
 }
@@ -142,6 +150,7 @@ TEST_CASE("wire sizes", "[codec]") {
     CHECK(codec::wire_size(lora::SetMode{}) == 3);
     CHECK(codec::wire_size(base::RxInfo{}) == 8);
     CHECK(codec::wire_size(base::BaseStatus{}) == 16);
+    CHECK(codec::wire_size(base::BasePosition{}) == 10);
 
     // The whole frame (type, seq, len, payload, crc) must fit a LoRa packet.
     for (size_t n : {codec::wire_size(lora::Disable{}), codec::wire_size(lora::SelfStatus{}),

@@ -6,6 +6,7 @@
 
 #include "cli.h"
 #include "gamepad.h"
+#include "map_layer.h"
 #include "settings.h"
 #include "theme.h"
 
@@ -15,6 +16,7 @@
 #include <basestation/core/frame_log.h>
 #include <basestation/core/geo.h>
 #include <basestation/core/link_session.h>
+#include <basestation/core/map_tiles.h>
 #include <basestation/core/serial_port.h>
 #include <basestation/core/teleop.h>
 #include <basestation/core/teleop_sender.h>
@@ -24,6 +26,7 @@
 #include <imgui.h>
 
 #include <array>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -32,7 +35,7 @@ namespace basestation::app {
 
 class App {
 public:
-    App(const Options& opts, float ui_scale);
+    App(const Options& opts, float ui_scale, SDL_Renderer* renderer);
     ~App();
     App(const App&) = delete;
     App& operator=(const App&) = delete;
@@ -45,6 +48,7 @@ private:
     // ---- per-frame logic (app.cpp) ----
     void update_link();
     void update_teleop();
+    void update_map();
     void update_settings_autosave();
     void run_test_actions();
     void save_settings_now();
@@ -82,11 +86,26 @@ private:
     void draw_events();         // ui_events.cpp
     void draw_confirm_popups(); // ui_commands.cpp (non-modal on purpose)
 
+    // ---- map and base station (ui_map.cpp) ----
+    void update_base_position();
+    // Moves the Fleet view's origin, keeping the same place on screen.
+    void set_map_origin(geo::LatLon origin);
+    void set_manual_base(geo::LatLon p);
+    tiles::TileSource map_source() const;
+    std::string map_source_problem() const;  // empty if the source is usable
+    std::string effective_tile_cache_dir() const;
+    void open_map_layer();                   // (re)creates map_ for the cache dir
+    void draw_map_controls();                // Map... popup contents
+    void draw_base_controls();               // Base... popup contents
+    void draw_map_download_window();
+    void open_download_window(int area_mode, std::optional<geo::LatLon> point);
+
     // Target combo used by Commands and Teleop: boats seen + ALL.
     bool target_combo(const char* label, uint8_t& target, bool allow_all);
 
     // ---- configuration ----
     Options opts_;
+    SDL_Renderer* renderer_;
     float ui_scale_;
     bool quit_ = false;
     std::string pref_dir_;
@@ -157,6 +176,37 @@ private:
     bool map_show_labels_ = true;
     double map_span_x_ = 120;  // current view size, for Re-center
     double map_span_y_ = 120;
+    double map_center_x_ = 0;  // current view centre (local metres)
+    double map_center_y_ = 0;
+    bool map_view_valid_ = false;  // the plot has been drawn at least once
+    int fleet_frames_ = 0;         // Fleet plot frames drawn (up to 3)
+    double map_plot_w_ = 0;        // plot area in pixels, last frame
+    double map_plot_h_ = 0;
+    std::optional<std::pair<double, double>> map_pending_center_;  // after an origin change
+
+    // ---- map tiles ----
+    std::unique_ptr<MapLayer> map_;
+    std::string map_cache_dir_;     // what map_ was opened with
+    int map_zoom_ = -1;             // zoom drawn last frame
+    std::array<char, 512> map_url_buf_{};
+    std::array<char, 512> map_cache_buf_{};
+    bool map_confirm_clear_ = false;
+    bool map_download_open_ = false;
+    int dl_area_mode_ = 0;          // 0 view, 1 around base, 2 around point
+    float dl_radius_m_ = 500.0f;
+    double dl_lat_ = 0, dl_lon_ = 0;
+    int dl_zmin_ = 14, dl_zmax_ = 19;
+    std::string dl_error_;
+    bool prefetch_was_active_ = false;
+
+    // ---- base station ----
+    BasePositionChoice base_pos_{};
+    bool base_place_mode_ = false;  // clicks on the Fleet view place the base
+    bool base_dragging_ = false;
+    double base_edit_lat_ = 0, base_edit_lon_ = 0;
+    bool base_edit_init_ = false;
+    geo::LatLon ctx_point_{};       // where the Fleet view context menu was opened
+    bool range_col_shown_ = false;  // Boats table: base known (Range column shown) last frame
 
     // ---- plots ----
     bool plot_follow_ = true;

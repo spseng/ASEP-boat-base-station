@@ -18,6 +18,10 @@ add_library(imgui STATIC
 target_include_directories(imgui SYSTEM PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends ${IMPLOT_DIR})
 target_link_libraries(imgui PUBLIC SDL3::SDL3-static)
 
+# stb_image, compiled once without this project's warning flags.
+add_library(stb_image STATIC stb_image_impl.c)
+target_include_directories(stb_image SYSTEM PUBLIC ${stb_SOURCE_DIR})
+
 add_executable(asep_base_station
   main.cpp
   cli.cpp
@@ -34,8 +38,11 @@ add_executable(asep_base_station
   ui_plots.cpp
   ui_link.cpp
   ui_events.cpp
+  map_layer.cpp
+  ui_map.cpp
 )
-target_link_libraries(asep_base_station PRIVATE basestation_core imgui basestation_warnings)
+target_link_libraries(asep_base_station PRIVATE basestation_core imgui stb_image basestation_warnings)
+target_compile_definitions(asep_base_station PRIVATE BASESTATION_VERSION="${PROJECT_VERSION}")
 
 if(APPLE)
   set_target_properties(asep_base_station PROPERTIES MACOSX_BUNDLE OFF)

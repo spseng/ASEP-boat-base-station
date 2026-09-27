@@ -210,3 +210,31 @@ TEST_CASE("simulator drives LinkSession, FleetModel and Commander end to end", "
     link.close();
 #endif
 }
+
+TEST_CASE("simulator --base-gps reports the base station position", "[sim]") {
+#ifndef ASEP_FAKE_BASE_PATH
+    SKIP("asep_fake_base not built");
+#else
+    SimProcess sim({"--seed", "2", "--quiet", "--base-gps", "--lat", "35.5", "--lon", "139.25"});
+    REQUIRE(sim.running());
+    std::string line;
+    REQUIRE(sim.read_line(line, 2000ms));
+    REQUIRE(line.rfind("PORT ", 0) == 0);
+
+    LinkSession link;
+    std::string error;
+    REQUIRE(link.open(line.substr(5), 115200, &error));
+    FleetModel fleet;
+    // No fix during the first second, then a fix near the origin.
+    REQUIRE(pump_until(link, fleet, 3000ms, [&] { return fleet.base_station().has_fix(); }));
+    const base::BasePosition& p = *fleet.base_station().position;
+    CHECK(std::fabs(boat::units::e7_to_deg(p.lat) - 35.5) < 5e-5);  // ~5 m
+    CHECK(std::fabs(boat::units::e7_to_deg(p.lon) - 139.25) < 5e-5);
+    CHECK(p.satellites >= 8);
+    const auto chosen = choose_base_position(fleet.base_station(), Clock::now(), geo::LatLon{1, 1}, false,
+                                             std::nullopt);
+    CHECK(chosen.source == BasePositionChoice::Source::Gps);
+    CHECK(fleet.counters().decode_errors == 0);
+    link.close();
+#endif
+}

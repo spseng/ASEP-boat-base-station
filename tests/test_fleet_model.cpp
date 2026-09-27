@@ -319,6 +319,68 @@ TEST_CASE("FleetModel: base station status and reboot detection", "[model][fleet
     CHECK(count_events(log, EventLevel::Warn, "Base station rebooted") == 1);
 }
 
+TEST_CASE("FleetModel: base station GPS position and fix events", "[model][fleet]") {
+    EventLog log;
+    FleetModel m(&log, T0);
+    CHECK_FALSE(m.base_station().has_fix());
+
+    m.ingest(make_rx(base::BasePosition{0, 0, 0, 3}, 0, 1.0));  // no fix yet
+    REQUIRE(m.base_station().position.has_value());
+    CHECK_FALSE(m.base_station().has_fix());
+    CHECK(count_events(log, EventLevel::Info, "GPS fix") == 0);
+
+    const int32_t lat = boat::units::deg_to_e7(HOME.lat_deg), lon = boat::units::deg_to_e7(HOME.lon_deg);
+    m.ingest(make_rx(base::BasePosition{lat, lon, 1, 9}, 1, 2.0));
+    CHECK(m.base_station().has_fix());
+    CHECK(m.base_station().position->satellites == 9);
+    CHECK(m.base_station().position_time == at(2.0));
+    CHECK(count_events(log, EventLevel::Info, "Base station GPS fix (9 satellites)") == 1);
+    m.ingest(make_rx(base::BasePosition{lat, lon, 1, 10}, 2, 3.0));
+    CHECK(count_events(log, EventLevel::Info, "GPS fix") == 1);  // only on the transition
+
+    // Fix quality > 0 but (0, 0) is still no fix.
+    m.ingest(make_rx(base::BasePosition{0, 0, 1, 0}, 3, 4.0));
+    CHECK_FALSE(m.base_station().has_fix());
+    CHECK(count_events(log, EventLevel::Warn, "GPS lost its fix") == 1);
+
+    // Wrong length is a decode error and keeps the old state.
+    RxFrame bad = make_rx(base::BasePosition{lat, lon, 1, 9});
+    bad.frame.len = 9;
+    m.ingest(bad);
+    CHECK(m.counters().decode_errors == 1);
+    CHECK_FALSE(m.base_station().has_fix());
+    CHECK(m.boats().empty());
+}
+
+TEST_CASE("choose_base_position: GPS beats manual unless pinned; stale GPS falls back", "[model][fleet]") {
+    using Source = BasePositionChoice::Source;
+    const geo::LatLon manual{35.001, 139.001};
+    const geo::LatLon cached{35.002, 139.002};
+    BaseStationState base;
+
+    CHECK(choose_base_position(base, at(0), std::nullopt, false, std::nullopt).source == Source::None);
+    CHECK_FALSE(choose_base_position(base, at(0), geo::LatLon{0, 0}, false, std::nullopt).known());
+    CHECK(choose_base_position(base, at(0), std::nullopt, false, cached).source == Source::CachedGps);
+    auto c = choose_base_position(base, at(0), manual, false, cached);
+    CHECK(c.source == Source::Manual);
+    CHECK(c.pos.lat_deg == manual.lat_deg);
+
+    base.position = base::BasePosition{boat::units::deg_to_e7(HOME.lat_deg), boat::units::deg_to_e7(HOME.lon_deg), 1, 8};
+    base.position_time = at(10.0);
+    c = choose_base_position(base, at(12.0), manual, false, cached);
+    CHECK(c.source == Source::Gps);
+    CHECK_THAT(c.pos.lat_deg, WithinAbs(HOME.lat_deg, 1e-7));
+    CHECK_THAT(c.pos.lon_deg, WithinAbs(HOME.lon_deg, 1e-7));
+    CHECK(choose_base_position(base, at(12.0), manual, true, cached).source == Source::Manual);
+    CHECK(choose_base_position(base, at(12.0), std::nullopt, true, cached).source == Source::Gps);
+    // Stale GPS no longer counts.
+    CHECK(choose_base_position(base, at(25.0), manual, false, cached, 10.0).source == Source::Manual);
+    // No fix: manual.
+    base.position->fix_quality = 0;
+    CHECK(choose_base_position(base, at(12.0), manual, false, cached).source == Source::Manual);
+    CHECK(std::string(to_string(Source::Gps)) == "base GPS");
+}
+
 TEST_CASE("FleetModel: histories are pruned by age and trail by count", "[model][fleet]") {
     FleetModel m(nullptr, T0);
     m.limits().history_seconds = 10.0;
@@ -386,7 +448,9 @@ TEST_CASE("FleetModel: clear forgets everything but t0 and limits", "[model][fle
     m.limits().history_seconds = 42.0;
     m.ingest(make_rx(self_at(1), 0, 6.0));
     m.ingest(make_rx(base::BaseStatus{1, 0, 0, 0}));
+    m.ingest(make_rx(base::BasePosition{1, 1, 1, 1}));
     m.clear();
+    CHECK_FALSE(m.base_station().position.has_value());
     CHECK(m.boats().empty());
     CHECK(m.counters().frames == 0);
     CHECK_FALSE(m.base_station().status.has_value());

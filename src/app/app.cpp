@@ -42,8 +42,9 @@ void copy_to(std::array<char, 512>& buf, const std::string& s) {
 
 }  // namespace
 
-App::App(const Options& opts, float ui_scale)
+App::App(const Options& opts, float ui_scale, SDL_Renderer* renderer)
     : opts_(opts),
+      renderer_(renderer),
       ui_scale_(ui_scale),
       link_(&events_, &frame_log_),
       fleet_(&events_),
@@ -85,6 +86,21 @@ App::App(const Options& opts, float ui_scale)
     copy_to(port_buf_, opts_.port.empty() ? settings_.port : opts_.port);
     ports_ = list_serial_ports();
     if (port_buf_[0] == '\0' && !ports_.empty()) copy_to(port_buf_, ports_.front().path);
+
+    // Map and base station. --map / --base act like choosing them in the UI.
+    if (!opts_.map_url.empty()) {
+        settings_.map.enabled = true;
+        settings_.map.source = tiles::CUSTOM_SOURCE_ID;
+        settings_.map.custom_url = opts_.map_url;
+    }
+    if (opts_.base_set) {
+        settings_.base.manual_set = true;
+        settings_.base.lat = opts_.base_lat;
+        settings_.base.lon = opts_.base_lon;
+    }
+    copy_to(map_url_buf_, settings_.map.custom_url);
+    open_map_layer();
+    update_base_position();
 
     events_.info("ASEP base station started");
     if (opts_.select_boat > 0) select_boat(static_cast<uint8_t>(opts_.select_boat));
@@ -137,6 +153,7 @@ void App::frame() {
     update_link();
     update_teleop();
     run_test_actions();
+    update_map();
 
     draw_menu_bar();
     draw_toolbar();
@@ -155,6 +172,7 @@ void App::frame() {
     draw_plots();
     draw_link();
     draw_events();
+    draw_map_download_window();
     draw_confirm_popups();
 
     // Default tabs after a fresh layout, then any --focus request. Only the
@@ -178,7 +196,9 @@ void App::update_link() {
     link_.poll(rx_buf_);
     for (const RxFrame& rx : rx_buf_) fleet_.ingest(rx);
 
-    // The local map frame is anchored at the first position we receive.
+    // The local map frame is anchored at the base station if its position is
+    // known, else at the first boat position we receive.
+    update_base_position();
     if (!local_) {
         for (const auto& [id, b] : fleet_.boats()) {
             if (b.self_status && (b.self_status->self.lat != 0 || b.self_status->self.lon != 0)) {
@@ -228,6 +248,17 @@ void App::update_link() {
         if (path_exists(conn_path_) && connect(conn_path_, conn_baud_, false))
             events_.info("Reconnected to " + conn_path_);
     }
+}
+
+void App::update_map() {
+    map_->update();
+    // Report the end of an area download in the event log.
+    const tiles::TileService::PrefetchStatus pf = map_->service().prefetch_status();
+    if (prefetch_was_active_ && !pf.active && !pf.message.empty()) {
+        if (pf.failed) events_.warn("Map download: " + pf.message);
+        else events_.info("Map download: " + pf.message);
+    }
+    prefetch_was_active_ = pf.active;
 }
 
 void App::update_teleop() {

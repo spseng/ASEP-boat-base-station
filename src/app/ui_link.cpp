@@ -125,6 +125,14 @@ void App::draw_link() {
     } else {
         ImGui::TextDisabled("No BaseStatus received (optional message).");
     }
+    if (bs.position) {
+        const double age = std::chrono::duration<double>(now - bs.position_time).count();
+        if (bs.has_fix())
+            ImGui::TextColored(age_color(age), "GPS fix, %u satellites (%s ago)", unsigned(bs.position->satellites),
+                               format_duration(age).c_str());
+        else
+            ImGui::TextColored(colors::warn, "GPS: no fix (%u satellites)", unsigned(bs.position->satellites));
+    }
 
     ImGui::SeparatorText("Decoder");
     const FleetModel::Counters& c = fleet_.counters();

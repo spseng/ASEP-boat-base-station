@@ -53,6 +53,7 @@ const char* type_name(uint8_t t) {
         case static_cast<uint8_t>(lora::MsgType::SetMode): return "SetMode";
         case static_cast<uint8_t>(base::MsgType::RxInfo): return "RxInfo";
         case static_cast<uint8_t>(base::MsgType::BaseStatus): return "BaseStatus";
+        case static_cast<uint8_t>(base::MsgType::BasePosition): return "BasePosition";
         default: return "unknown";
     }
 }
@@ -138,6 +139,14 @@ std::string decode(const wirelink::Frame& f) {
             if (codec::unpack(f, m)) {
                 return fmt("uptime_ms=%" PRIu32 " rx_ok=%" PRIu32 " rx_bad=%" PRIu32 " tx_count=%" PRIu32,
                            m.uptime_ms, m.rx_ok, m.rx_bad, m.tx_count);
+            }
+            break;
+        }
+        case static_cast<uint8_t>(base::MsgType::BasePosition): {
+            base::BasePosition m{};
+            if (codec::unpack(f, m)) {
+                return fmt("lat=%.7f lon=%.7f fix_quality=%u satellites=%u", boat::units::e7_to_deg(m.lat),
+                           boat::units::e7_to_deg(m.lon), unsigned(m.fix_quality), unsigned(m.satellites));
             }
             break;
         }

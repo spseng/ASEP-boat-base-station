@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
     ImGui_ImplSDLRenderer3_Init(renderer);
 
     {
-        basestation::app::App app(opts, ui_scale);
+        basestation::app::App app(opts, ui_scale, renderer);
 
         const Uint64 start_ms = SDL_GetTicks();
         bool screenshot_done = false;
