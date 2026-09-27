@@ -17,10 +17,12 @@
 namespace basestation {
 
 // Sequence-number accounting for one (sender, message type) stream.
-// seq is a uint8 per type per sender; a forward jump of d means d-1 frames
-// were lost. A jump of more than `REORDER_WINDOW` backwards is treated as the
-// sender restarting (no loss counted); a small backwards step is a duplicate
-// or reorder and is ignored.
+// seq is a uint8 per type per sender, so direction is ambiguous; with
+// d = uint8(seq - last):
+//   1 .. 256-REORDER_WINDOW : forward, d-1 frames lost
+//   0 or > 256-REORDER_WINDOW : duplicate / small reorder, ignored
+// Senders start every type at 0, so landing on seq 0 after a jump larger
+// than REORDER_WINDOW counts as a restart instead of as lost frames.
 struct SeqStats {
     static constexpr int REORDER_WINDOW = 16;
 
