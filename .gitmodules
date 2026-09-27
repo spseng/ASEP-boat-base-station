@@ -1,0 +1,3 @@
+[submodule "external/ASEP-boat"]
+	path = external/ASEP-boat
+	url = https://github.com/spseng/ASEP-boat.git
