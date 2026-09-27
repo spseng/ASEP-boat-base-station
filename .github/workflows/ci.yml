@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build xvfb \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            wayland-protocols libegl1-mesa-dev libgl1-mesa-dev libdrm-dev \
+            libgbm-dev libudev-dev libdbus-1-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja || true
+
+      - name: Cache fetched dependencies
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ matrix.os }}-${{ hashFiles('cmake/Dependencies.cmake') }}
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFETCHCONTENT_BASE_DIR=${{ github.workspace }}/deps
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: GUI smoke test against the simulator (Ubuntu, headless)
+        if: runner.os == 'Linux'
+        run: |
+          ./build/src/sim/asep_fake_base --quiet > sim.out &
+          for i in $(seq 50); do grep -q '^PORT ' sim.out && break; sleep 0.1; done
+          PORT=$(sed -n 's/^PORT //p' sim.out | head -1)
+          xvfb-run -a -s "-screen 0 1600x1000x24" \
+            ./build/src/app/asep_base_station --port "$PORT" --no-record \
+            --size 1280x800 --screenshot smoke.png --screenshot-after 5
+          kill %1 || true
+          test -s smoke.png
+
+      - name: Upload smoke-test screenshot
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-screenshot
+          path: smoke.png
