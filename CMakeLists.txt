@@ -13,6 +13,7 @@ endif()
 option(BASESTATION_BUILD_GUI   "Build the SDL3 + Dear ImGui application" ON)
 option(BASESTATION_BUILD_TESTS "Build the unit tests"                    ON)
 option(BASESTATION_BUILD_SIM   "Build the fake base station simulator"   ON)
+option(BASESTATION_BUILD_TOOLS "Build command-line tools (wl_mon)"       ON)
 option(BASESTATION_USE_CURL    "Download map tiles with libcurl if found" ON)
 
 # ---------------------------------------------------------------------------
@@ -62,6 +63,7 @@ add_library(basestation_core STATIC
   src/core/src/map_tiles.cpp
   src/core/src/http_client.cpp
   src/core/src/tile_service.cpp
+  src/core/src/msg_catalog.cpp
 )
 target_include_directories(basestation_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
 target_link_libraries(basestation_core
@@ -88,6 +90,10 @@ include(cmake/Dependencies.cmake)
 
 if(BASESTATION_BUILD_SIM)
   add_subdirectory(src/sim)
+endif()
+
+if(BASESTATION_BUILD_TOOLS)
+  add_subdirectory(src/tools)
 endif()
 
 if(BASESTATION_BUILD_GUI)

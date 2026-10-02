@@ -73,7 +73,7 @@ out and back in.
 
 Build options (all ON by default): `-DBASESTATION_BUILD_GUI=OFF` builds only
 the core, simulator and tests (no SDL needed), `-DBASESTATION_BUILD_TESTS`,
-`-DBASESTATION_BUILD_SIM`, `-DBASESTATION_USE_CURL=OFF` (no map downloads,
+`-DBASESTATION_BUILD_SIM`, `-DBASESTATION_BUILD_TOOLS` (wl_mon), `-DBASESTATION_USE_CURL=OFF` (no map downloads,
 even if libcurl is installed). CMake prints `Map tile downloads: enabled` or
 `DISABLED` when it configures.
 
@@ -117,6 +117,35 @@ the app. `asep_log_dump` turns a log into CSV:
 ```sh
 ./build/src/sim/asep_log_dump session.aseplog > session.csv
 ```
+
+### Debug monitor (wl_mon)
+
+`wl_mon` is a small terminal monitor for any wirelink serial link, like
+`ros2 topic echo` and `ros2 topic hz`. It only reads: it never writes to the
+port. If the port disappears (ESP32 reset, unplugged, being flashed) it shows
+`waiting for PORT…` and reopens it when it comes back.
+
+```sh
+./build/src/tools/wl_mon echo /dev/ttyUSB0                  # one line per frame
+./build/src/tools/wl_mon echo /dev/ttyUSB0 --type Status    # only some messages
+./build/src/tools/wl_mon top  /dev/ttyUSB0                  # live table: Hz, lost, bogus, latest values
+./build/src/tools/wl_mon top  /dev/ttyACM0 --proto serial   # a boat's Pi <-> ESP32 link
+```
+
+`--proto lora` (default) decodes what the base-station ESP32 sends the laptop
+(the LoRa messages plus the 0x80+ base-local ones); `--proto serial` decodes
+the boat's Pi <-> ESP32 messages (`wirelink/msg/serial.h`). The two sets reuse
+type numbers (3 is `Status` on one, `PeerTable` on the other), so pick the one
+for the link you are on.
+
+Every frame is checked. **BOGUS** (red) means a value cannot be right: CRC or
+COBS failure, a payload whose length does not match the message layout, NaN
+where a number is required, an out-of-range position, quaternion, PWM, LoRa
+setting, boat id and so on. **WARN** (yellow) means suspicious but possibly
+just newer firmware, e.g. an unknown mode, message type or fault bit. Colours
+are off with `--no-color` or when stdout is not a terminal; `top` then prints
+a plain snapshot every second. The checks live in
+`src/core/src/msg_catalog.cpp`.
 
 ---
 
@@ -247,6 +276,7 @@ src/core/    everything that is not GUI: serial port, frame splitting,
              map tiles (tile math, cache, downloader)
 src/app/     the SDL3 + Dear ImGui + ImPlot application
 src/sim/     asep_fake_base simulator, asep_log_dump
+src/tools/   wl_mon, a read-only terminal monitor for any wirelink link
 tests/       Catch2 unit + integration tests (pty-backed, no hardware)
 external/    ASEP-boat submodule (read-only)
 docs/        screenshots (+ a synthetic tile server for them)

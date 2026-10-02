@@ -10,6 +10,7 @@ add_executable(basestation_tests
   test_sim_integration.cpp
   test_map_tiles.cpp
   test_tile_service.cpp
+  test_msg_catalog.cpp
 )
 target_link_libraries(basestation_tests PRIVATE basestation_core basestation_warnings Catch2::Catch2WithMain)
 # The simulator integration test launches the simulator binary.
