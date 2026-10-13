@@ -3,3 +3,4 @@
 compile_commands.json
 imgui.ini
 *.aseplog
+.DS_Store
