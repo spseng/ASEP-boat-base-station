@@ -1,6 +1,6 @@
-# The simulator deliberately does not link basestation_core: it parses with
-# upstream wirelink and encodes with basestation::codec only, so it can
-# cross-check core instead of sharing its bugs.
+# The simulator deliberately does not link basestation_core: it parses and
+# encodes with upstream wirelink only, so it can cross-check core instead of
+# sharing its bugs.
 add_executable(asep_fake_base fake_base.cpp sim_world.cpp)
 target_link_libraries(asep_fake_base PRIVATE basestation_proto basestation_warnings)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

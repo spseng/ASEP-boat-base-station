@@ -74,16 +74,14 @@ void World::radio_at(double n, double e, float& rssi, float& snr) {
 SimBoat* World::maybe_toggle_fault(double now_s) {
     if (faulted_ >= 0 && now_s >= fault_clear_s_) {
         SimBoat& b = boats_[static_cast<size_t>(faulted_)];
-        b.fault_flags &= static_cast<uint16_t>(~boat::mode::fault::GPS_FAILURE);
-        b.status_now = true;
+        b.faults &= static_cast<uint8_t>(~boat::mode::fault::GPS_FAILURE);
         faulted_ = -1;
         return &b;
     }
     if (faulted_ < 0 && now_s >= next_fault_s_ && !boats_.empty()) {
         faulted_ = std::uniform_int_distribution<int>(0, static_cast<int>(boats_.size()) - 1)(rng_);
         SimBoat& b = boats_[static_cast<size_t>(faulted_)];
-        b.fault_flags |= boat::mode::fault::GPS_FAILURE;
-        b.status_now = true;
+        b.faults |= boat::mode::fault::GPS_FAILURE;
         fault_clear_s_ = now_s + std::uniform_real_distribution<double>(5.0, 12.0)(rng_);
         next_fault_s_ = fault_clear_s_ + std::uniform_real_distribution<double>(20.0, 40.0)(rng_);
         return &b;
@@ -162,7 +160,7 @@ void World::integrate(SimBoat& b, double dt, double now_s) {
     b.north_m += (b.speed_mps * std::cos(h) + drift_n_) * dt;
     b.east_m += (b.speed_mps * std::sin(h) + drift_e_) * dt;
 
-    if (!(b.fault_flags & boat::mode::fault::GPS_FAILURE)) {
+    if (!(b.faults & boat::mode::fault::GPS_FAILURE)) {
         b.fix_north_m = b.north_m;
         b.fix_east_m = b.east_m;
         b.fix_time_s = now_s;

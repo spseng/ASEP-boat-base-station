@@ -94,8 +94,11 @@ On Ubuntu it is `/dev/ttyUSB*` or `/dev/ttyACM*`. The default baud rate is
 ### Without hardware: the simulator
 
 `asep_fake_base` pretends to be the base-station ESP32 plus a fleet of boats,
-on a pseudo-terminal. The boats answer Command, Disable, Re-enable and
-SetMode; there is packet loss and the occasional corrupted byte, and a
+on a pseudo-terminal. It runs the fleet's TDMA schedule (see
+[Radio and TDMA](#radio-and-tdma)): every boat sends a SelfStatus each
+cycle, and the simulated base ESP32 transmits one land frame per cycle,
+picked from what the app sent. The boats answer Command, Disable, Re-enable
+and SetMode; there is packet loss and the occasional corrupted byte, and a
 simulated GPS fault comes and goes.
 
 ```sh
@@ -106,7 +109,8 @@ simulated GPS fault comes and goes.
 `--link /tmp/asep-sim` also creates a stable symlink to the port.
 `--start-mode auto` starts the boats wandering. `--base-gps` makes the base
 station report a GPS position (see below). `--help` lists every option
-(boat count, loss, corruption, rates, origin).
+(boat count, loss, corruption, TDMA cycle rate, origin). Without `--quiet`
+it prints each land frame it transmits and which boats heard it.
 
 ### Session logs
 
@@ -127,7 +131,7 @@ port. If the port disappears (ESP32 reset, unplugged, being flashed) it shows
 
 ```sh
 ./build/src/tools/wl_mon echo /dev/ttyUSB0                  # one line per frame
-./build/src/tools/wl_mon echo /dev/ttyUSB0 --type Status    # only some messages
+./build/src/tools/wl_mon echo /dev/ttyUSB0 --type SelfStatus  # only some messages
 ./build/src/tools/wl_mon top  /dev/ttyUSB0                  # live table: Hz, lost, bogus, latest values
 ./build/src/tools/wl_mon top  /dev/ttyACM0 --proto serial   # a boat's Pi <-> ESP32 link
 ```
@@ -135,17 +139,25 @@ port. If the port disappears (ESP32 reset, unplugged, being flashed) it shows
 `--proto lora` (default) decodes what the base-station ESP32 sends the laptop
 (the LoRa messages plus the 0x80+ base-local ones); `--proto serial` decodes
 the boat's Pi <-> ESP32 messages (`wirelink/msg/serial.h`). The two sets reuse
-type numbers (3 is `Status` on one, `PeerTable` on the other), so pick the one
-for the link you are on.
+type numbers (3 is `Heartbeat` on one, `PeerTable` on the other), so pick the
+one for the link you are on.
 
 Every frame is checked. **BOGUS** (red) means a value cannot be right: CRC or
 COBS failure, a payload whose length does not match the message layout, NaN
 where a number is required, an out-of-range position, quaternion, PWM, LoRa
 setting, boat id and so on. **WARN** (yellow) means suspicious but possibly
-just newer firmware, e.g. an unknown mode, message type or fault bit. Colours
+just newer firmware, e.g. an unknown mode, message type, fault bit or a
+reserved bit set in SelfStatus `state`. Colours
 are off with `--no-color` or when stdout is not a terminal; `top` then prints
 a plain snapshot every second. The checks live in
 `src/core/src/msg_catalog.cpp`.
+
+**Radio settings.** With `--proto serial`, the Pi's `Config` message is also
+checked against `boat_defs/lora.h` (SF6, 500 kHz, 915 MHz): `lora_sf`,
+`lora_bw_hz` or `lora_freq_hz` that differ are a WARN. They may be valid LoRa
+settings, but a boat whose radio is set differently from the rest of the
+fleet can neither hear the others nor be heard. It is inaudible, as if it
+were switched off.
 
 ---
 
@@ -220,6 +232,8 @@ How it behaves:
 
 - **Enabling:** teleop is off until you tick *Teleop enabled* and pick a
   target boat. While it's on, the app sends a `Command` 10 times a second.
+  The base ESP32 transmits the latest one in each land slot (see
+  [Radio and TDMA](#radio-and-tdma)).
 - **When it sends zero:** releasing RB, unplugging the controller, or a UI
   that stops updating (input older than 250 ms) all send zero velocity.
   Commands keep flowing either way, so the boat sees the zero.
@@ -229,10 +243,11 @@ How it behaves:
   not focused. The deadman button still applies.
 - **The boat must accept it:** a boat acts on `Command` only in MANUAL mode,
   armed, with its gate enabled. The Teleop panel warns if the target's last
-  reported state says it will ignore you.
+  SelfStatus says it will ignore you.
 
 **Disable** (toolbar *DISABLE ALL*, per-boat *DISABLE*, or B on the
-controller) is sent three times, 100 ms apart, because LoRa loses packets. A
+controller) is sent three times, 100 ms apart, because LoRa loses packets.
+Each copy goes out in its own land slot, ahead of anything else. A
 Re-enable sent afterwards cancels any repeats still queued for that boat.
 Software disable complements the hardware E-stop and battery disconnect;
 it does not replace them.
@@ -248,10 +263,10 @@ lost packets per boat and per message type from them.
 
 | Type | Message | Direction | Defined in |
 |---|---|---|---|
-| 0 | `Disable {rx_id}` | land → boat | `src/proto/basestation/proto/lora.h` |
-| 1 | `SelfStatus {PeerEntry}` | boat → all | 〃 |
+| 0 | `Disable {rx_id}` | land → boat | upstream `wirelink/msg/lora.h` |
+| 1 | `SelfStatus {PeerEntry self, heading_deg, state, faults, gs_rssi, gs_snr}` | boat → all, every TDMA cycle | 〃 |
 | 2 | `Command {rx_id, lin_vel mm/s, ang_vel mrad/s}` | land → boat | 〃 |
-| 3 | `Status {tx_id, mode, armed, gate, faults, heading, gs_rssi, gs_snr}` | boat → land | 〃 |
+| 3 | `Heartbeat {}` | land → all, when the land slot has nothing else | 〃 |
 | 4 | `Reenable {rx_id}` | land → boat | 〃 |
 | 5 | `SetMode {rx_id, mode, armed}` | land → boat | 〃 |
 | 0x80 | `RxInfo {rssi, snr}` | base ESP32 → PC | `src/proto/basestation/proto/base.h` |
@@ -260,17 +275,47 @@ lost packets per boat and per message type from them.
 
 `rx_id` 255 (`boat::ids::BROADCAST_ID`) addresses every boat.
 
-The LoRa message set is a **proposal**. It will move upstream into
-`wirelink/msg/lora.h`; until then it lives here. Everything the ASEP-boat
-repository needs to change is listed in
-**[WIRELINK_CHANGES.md](WIRELINK_CHANGES.md)**.
+Everything a boat reports is in its **SelfStatus**: position and scalar
+(`self`), `heading_deg` (degrees true, NaN = no compass, then the app shows
+course over ground), `state` (bits 0-3 mode, bit 4 armed, bit 5 gate
+enabled, bits 6-7 reserved; decoded in `src/proto/basestation/proto/state.h`),
+`faults` (`boat::mode::fault` bits) and `gs_rssi` / `gs_snr`: how well the
+boat hears the land station, NaN until it has heard one land frame. The
+app's "Boat hears" column shows `-` then.
+
+The LoRa messages, the codec (`wirelink::codec::pack` / `unpack`) and the
+radio settings (`boat_defs/lora.h`) come from upstream ASEP-boat; this
+repository adds only the base-local 0x80+ messages. What is still open
+upstream is listed in **[WIRELINK_CHANGES.md](WIRELINK_CHANGES.md)**.
+
+### Radio and TDMA
+
+All radios use **SF6, 500 kHz, 915 MHz** (`boat_defs/lora.h`). The air time
+is split into a **10 Hz cycle of 4 slots of 25 ms**: one per boat (3 boats)
+and one for the land station.
+
+- Each boat transmits **one SelfStatus in its slot every cycle**. The same
+  packet serves its peers and the land station.
+- The base ESP32 transmits **exactly one frame in the land slot**, chosen
+  from what the app sent since the previous land slot: **Disable** first,
+  then **Reenable / SetMode** (in order), then the **latest Command** (older
+  ones are replaced), and a **Heartbeat** when there is nothing else. Every
+  boat hears the land slot, so `gs_rssi` / `gs_snr` stay fresh even without
+  commands.
+- The app keeps sending what it always sent (Commands at the teleop rate,
+  Disable three times, Reenable / SetMode once). Slot selection is the base
+  ESP32's job; the app never sends Heartbeat.
+- The base ESP32 relays every boat frame it receives (plus RxInfo) but not
+  its own transmissions. `BaseStatus.tx_count` counts land frames sent, so it
+  grows by about 10 per second.
 
 ---
 
 ## Project layout
 
 ```
-src/proto/   message definitions + codec (header-only)
+src/proto/   base-local messages, SelfStatus state byte, display names
+             (header-only; LoRa messages and codec are upstream's)
 src/core/    everything that is not GUI: serial port, frame splitting,
              link session, session log, fleet model, teleop, commands,
              map tiles (tile math, cache, downloader)

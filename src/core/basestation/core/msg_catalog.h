@@ -6,16 +6,15 @@
 //
 // Two message sets share the frame format but reuse type numbers, so the
 // caller says which link it is looking at:
-//   Proto::Lora    basestation::lora (0-5) + basestation::base (0x80+):
+//   Proto::Lora    wirelink::msg::lora (0-5) + basestation::base (0x80+):
 //                  what the base-station ESP32 sends the laptop
 //   Proto::Serial  wirelink::msg::serial (1-10): the boat's Pi <-> ESP32 link
 //
 // Upstream fields() visitors pass values only, so field names live here,
 // one spec per message in fields() order. tests/test_msg_catalog.cpp counts
 // each struct's leaves against its spec, so a struct changed upstream fails
-// the tests instead of silently mislabelling fields.
-
-#include <basestation/proto/codec.h>
+// the tests instead of silently mislabelling fields. Decoding itself uses
+// upstream's wirelink::codec::Reader.
 
 #include <wirelink/framing.h>
 
@@ -23,9 +22,20 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace basestation::catalog {
+
+namespace detail {
+    // T is a message (or nested struct) with a fields() visitor taking F.
+    template <class T, class F, class = void>
+    struct has_fields : std::false_type {};
+    template <class T, class F>
+    struct has_fields<T, F, std::void_t<decltype(std::declval<T&>().fields(std::declval<F&>()))>>
+        : std::true_type {};
+}  // namespace detail
 
 enum class Proto { Lora, Serial };
 
@@ -68,6 +78,7 @@ enum class Kind : uint8_t {
     Mode,    // boat::mode::Mode (unknown = warning: may be newer firmware)
     Armed,   // boat::mode::ArmedState
     Gate,    // boat::mode::GateState
+    State,   // lora::SelfStatus::state: mode | armed | gate (see proto/state.h)
     Faults,  // boat::mode::fault bits (undefined bits = warning)
     List,    // wirelink::List: this entry, then the element's leaves
 };
@@ -106,7 +117,7 @@ struct LeafCounter {
 
     template <class T>
     void operator()(T& v) {
-        if constexpr (codec::detail::has_fields<T, LeafCounter>::value) {
+        if constexpr (detail::has_fields<T, LeafCounter>::value) {
             v.fields(*this);
         } else {
             ++n;

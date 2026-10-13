@@ -1,6 +1,7 @@
 #include <basestation/core/frame_splitter.h>
-#include <basestation/proto/codec.h>
-#include <basestation/proto/lora.h>
+#include <basestation/proto/state.h>
+
+#include <wirelink/wire.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -22,7 +23,7 @@ Bytes packet_for(const wirelink::Frame& f, uint8_t seq) {
 
 wirelink::Frame command(uint8_t rx_id, int16_t lin) {
     wirelink::Frame f{};
-    REQUIRE(codec::pack(lora::Command{rx_id, lin, static_cast<int16_t>(-lin)}, f));
+    REQUIRE(wirelink::codec::pack(lora::Command{rx_id, lin, static_cast<int16_t>(-lin)}, f));
     return f;
 }
 
@@ -37,7 +38,7 @@ std::vector<wirelink::Frame> feed_all(FrameSplitter& s, const Bytes& data) {
 void check_command(const wirelink::Frame& f, uint8_t rx_id, int16_t lin, uint8_t seq) {
     CHECK(f.seq == seq);
     lora::Command c{};
-    REQUIRE(codec::unpack(f, c));
+    REQUIRE(wirelink::codec::unpack(f, c));
     CHECK(c.rx_id == rx_id);
     CHECK(c.lin_vel == lin);
     CHECK(c.ang_vel == -lin);

@@ -1,11 +1,12 @@
 #include <basestation/core/msg_catalog.h>
 #include <basestation/proto/base.h>
-#include <basestation/proto/codec.h>
-#include <basestation/proto/lora.h>
+#include <basestation/proto/state.h>
 
 #include <boat_defs/mode.h>
 
+#include <wirelink/msg/lora.h>
 #include <wirelink/msg/serial.h>
+#include <wirelink/wire.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -26,7 +27,7 @@ constexpr float NaN = std::numeric_limits<float>::quiet_NaN();
 template <class T>
 wirelink::Frame frame_of(T msg) {
     wirelink::Frame f{};
-    REQUIRE(codec::pack(msg, f));
+    REQUIRE(wirelink::codec::pack(msg, f));
     return f;
 }
 
@@ -66,10 +67,14 @@ ser::Attitude attitude(float x, float y, float z, float w) {
 
 ser::GPS gps() { return ser::GPS{423601234, -710589123, 1700000000000ull, 1, 9, 0.9f, 1.5f, 270.0f}; }
 
-ser::Config config() { return ser::Config{3, 2, 9, 125000, 915000000, 1100, 1500, 1900, 1}; }
+// Radio settings as in boat_defs/lora.h (SF6, 500 kHz, 915 MHz).
+ser::Config config() { return ser::Config{3, 2, 6, 500000, 915000000, 1100, 1500, 1900, 1}; }
 
-lora::Status status() {
-    return lora::Status{2, 1, 1, 1, 0, 90.0f, -97.5f, 7.5f};
+// Boat 2, AUTONOMOUS + ARMED + gate ENABLED, heading 90, hears land.
+lora::SelfStatus self_status() {
+    using namespace boat::mode;
+    return lora::SelfStatus{peer(2), 90.0f, state::encode(Mode::AUTONOMOUS, ArmedState::ARMED, GateState::ENABLED),
+                            0, -97.5f, 7.5f};
 }
 
 }  // namespace
@@ -78,7 +83,7 @@ TEST_CASE("every catalog spec matches its struct's leaf count", "[mon]") {
     check_spec<lora::Disable>(Proto::Lora);
     check_spec<lora::SelfStatus>(Proto::Lora);
     check_spec<lora::Command>(Proto::Lora);
-    check_spec<lora::Status>(Proto::Lora);
+    check_spec<lora::Heartbeat>(Proto::Lora);
     check_spec<lora::Reenable>(Proto::Lora);
     check_spec<lora::SetMode>(Proto::Lora);
     check_spec<base::RxInfo>(Proto::Lora);
@@ -96,27 +101,43 @@ TEST_CASE("every catalog spec matches its struct's leaf count", "[mon]") {
     check_spec<ser::Config>(Proto::Serial);
     check_spec<ser::Heartbeat>(Proto::Serial);
     // No fields upstream yet; once it gets some, give it a spec.
-    CHECK_FALSE(codec::detail::has_fields<ser::ReceivedCommand, LeafCounter>::value);
+    CHECK_FALSE(detail::has_fields<ser::ReceivedCommand, LeafCounter>::value);
     CHECK(find(Proto::Serial, static_cast<uint8_t>(ser::ReceivedCommand::TYPE))->fields.empty());
     CHECK(messages(Proto::Serial).size() == 10);
 
     CHECK(find(Proto::Serial, "attitude") == find(Proto::Serial, uint8_t{1}));
+    CHECK(find(Proto::Lora, "heartbeat") == find(Proto::Lora, uint8_t{3}));
+    CHECK(find(Proto::Lora, "Status") == nullptr);  // folded into SelfStatus upstream
     CHECK(find(Proto::Lora, "nope") == nullptr);
+    CHECK(leaf_count<lora::SelfStatus>() == 10);
+    CHECK(leaf_count<lora::Heartbeat>() == 0);
 }
 
 TEST_CASE("decode produces readable fields", "[mon]") {
-    const Decoded st = dec(Proto::Lora, status());
-    CHECK(st.name == "Status");
+    const Decoded st = dec(Proto::Lora, self_status());
+    CHECK(st.name == "SelfStatus");
     CHECK(st.sender == 2);
-    CHECK(text(st) == "tx_id=2 mode=AUTONOMOUS armed=ARMED gate=ENABLED faults=none heading=90.0deg "
-                      "gs_rssi=-97.5dBm gs_snr=7.5dB");
+    CHECK(text(st) == "id=2 lat=42.0000000 lon=-71.0000000 scalar=0.25 age=120ms heading=90.0deg "
+                      "state=AUTONOMOUS|ARMED|GATE_ENABLED faults=none gs_rssi=-97.5dBm gs_snr=7.5dB");
     CHECK(clean(st));
 
-    const Decoded ss = dec(Proto::Lora, lora::SelfStatus{peer(4)});
-    CHECK(ss.sender == 4);
-    CHECK(text(ss) == "id=4 lat=42.0000000 lon=-71.0000000 scalar=0.25 age=120ms");
+    lora::SelfStatus fresh = self_status();
+    fresh.state = 0;  // MANUAL, DISARMED, gate TRIPPED
+    fresh.faults = boat::mode::fault::GPS_FAILURE;
+    fresh.heading_deg = fresh.gs_rssi = fresh.gs_snr = NaN;
+    const Decoded fd = dec(Proto::Lora, fresh);
+    CHECK(text(fd) == "id=2 lat=42.0000000 lon=-71.0000000 scalar=0.25 age=120ms heading=nan "
+                      "state=MANUAL|DISARMED|GATE_TRIPPED faults=GPS_FAILURE gs_rssi=nan gs_snr=nan");
+    CHECK(clean(fd));
+
+    const Decoded hb = dec(Proto::Lora, lora::Heartbeat{});
+    CHECK(hb.name == "Heartbeat");
+    CHECK(text(hb).empty());
+    CHECK(clean(hb));
 
     CHECK(text(dec(Proto::Lora, lora::Disable{255})) == "rx_id=ALL");
+    CHECK(text(dec(Proto::Lora, lora::Command{3, -250, 100})) == "rx_id=3 lin=-250mm/s ang=100mrad/s");
+    CHECK(text(dec(Proto::Lora, lora::SetMode{255, 1, 1})) == "rx_id=ALL mode=AUTONOMOUS armed=ARMED");
 
     const Decoded att = dec(Proto::Serial, attitude(0, 0, 0.7071f, 0.7071f));
     CHECK(text(att) == "q=(0.00,0.00,0.71,0.71) gyro=(0.01,0.00,0.00) acc=(0.00,0.00,9.81) calib=0xFF");
@@ -183,17 +204,18 @@ TEST_CASE("unknown types and layout mismatches are reported", "[mon]") {
 }
 
 TEST_CASE("lora and serial decode the same type number differently", "[mon]") {
-    const wirelink::Frame st = frame_of(status());
-    const Decoded as_lora = decode(Proto::Lora, st);
-    const Decoded as_serial = decode(Proto::Serial, st);
-    CHECK(as_lora.name == "Status");
+    const wirelink::Frame hb = frame_of(lora::Heartbeat{});
+    const Decoded as_lora = decode(Proto::Lora, hb);
+    const Decoded as_serial = decode(Proto::Serial, hb);
+    CHECK(as_lora.name == "Heartbeat");
     CHECK(clean(as_lora));
     CHECK(as_serial.name == "PeerTable");  // type 3 on the boat's serial link
     CHECK(as_serial.has(Severity::Error));
 
-    const wirelink::Frame ss = frame_of(lora::SelfStatus{peer(1)});
+    const wirelink::Frame ss = frame_of(self_status());
     CHECK(decode(Proto::Lora, ss).name == "SelfStatus");
     CHECK(decode(Proto::Serial, ss).name == "Attitude");
+    CHECK(decode(Proto::Serial, ss).has(Severity::Error));  // 31 bytes, Attitude has 41
 }
 
 TEST_CASE("plausibility: floats", "[mon]") {
@@ -204,9 +226,18 @@ TEST_CASE("plausibility: floats", "[mon]") {
     inf.lin_acc_z = std::numeric_limits<float>::infinity();
     CHECK(flagged(dec(Proto::Serial, inf), Severity::Error, "acc.z is inf"));
 
-    // NaN is documented as "unknown" for these three.
-    lora::Status s = status();
+    // NaN is documented as "unknown" for these three...
+    lora::SelfStatus s = self_status();
     s.heading_deg = s.gs_rssi = s.gs_snr = NaN;
+    CHECK(clean(dec(Proto::Lora, s)));
+    // ...but not for the scalar.
+    s = self_status();
+    s.self.scalar = NaN;
+    CHECK(flagged(dec(Proto::Lora, s), Severity::Error, "scalar is NaN"));
+    s = self_status();
+    s.heading_deg = 360.5f;
+    CHECK(flagged(dec(Proto::Lora, s), Severity::Error, "heading 360.5deg out of range [0,360]"));
+    s.heading_deg = 0.0f;
     CHECK(clean(dec(Proto::Lora, s)));
     CHECK(flagged(dec(Proto::Serial, ser::OwnScalar{NaN}), Severity::Error, "scalar is NaN"));
 
@@ -217,7 +248,7 @@ TEST_CASE("plausibility: floats", "[mon]") {
 
 TEST_CASE("plausibility: positions and GPS", "[mon]") {
     CHECK(clean(dec(Proto::Serial, gps())));
-    lora::SelfStatus ss{peer(1)};
+    lora::SelfStatus ss = self_status();
     ss.self.lat = 900000001;
     CHECK(flagged(dec(Proto::Lora, ss), Severity::Error, "lat 90.0000001 out of range"));
     CHECK(flagged(dec(Proto::Serial, ser::BroadcastPayload{0, -1800000001, 1.0f}), Severity::Error, "lon"));
@@ -247,40 +278,61 @@ TEST_CASE("plausibility: positions and GPS", "[mon]") {
 }
 
 TEST_CASE("plausibility: ids, modes, faults", "[mon]") {
-    CHECK(flagged(dec(Proto::Lora, lora::SelfStatus{peer(0)}), Severity::Error, "id 0 is not a boat id"));
-    CHECK(flagged(dec(Proto::Lora, lora::SelfStatus{peer(11)}), Severity::Error, "not a boat id"));
-    CHECK(flagged(dec(Proto::Lora, lora::SelfStatus{peer(255)}), Severity::Error, "not a boat id"));
-    CHECK(clean(dec(Proto::Lora, lora::Reenable{255})));  // broadcast makes sense for rx_id
+    lora::SelfStatus s = self_status();
+    for (uint8_t id : {0, 11, 255}) {
+        s.self.id = id;
+        CHECK(flagged(dec(Proto::Lora, s), Severity::Error, "id " + std::to_string(id) + " is not a boat id"));
+    }
+    for (uint8_t id : {1, 10, 255}) {  // broadcast makes sense for rx_id
+        CHECK(clean(dec(Proto::Lora, lora::Disable{id})));
+        CHECK(clean(dec(Proto::Lora, lora::Reenable{id})));
+        CHECK(clean(dec(Proto::Lora, lora::Command{id, 0, 0})));
+        CHECK(clean(dec(Proto::Lora, lora::SetMode{id, 0, 0})));
+    }
     CHECK(flagged(dec(Proto::Lora, lora::Reenable{0}), Severity::Error, "rx_id 0"));
+    CHECK(flagged(dec(Proto::Lora, lora::Disable{11}), Severity::Error, "rx_id 11"));
+    CHECK(flagged(dec(Proto::Lora, lora::Command{0, 0, 0}), Severity::Error, "rx_id 0"));
+    CHECK(flagged(dec(Proto::Lora, lora::SetMode{12, 0, 0}), Severity::Error, "rx_id 12"));
 
-    lora::Status s = status();
-    s.mode = 9;  // maybe newer firmware: only a warning
+    // State byte: an unknown mode may be newer firmware, so only a warning.
+    s = self_status();
+    s.state = state::encode(uint8_t{9}, boat::mode::ArmedState::ARMED, boat::mode::GateState::ENABLED);
     Decoded d = dec(Proto::Lora, s);
     CHECK(flagged(d, Severity::Warning, "unknown mode 9"));
     CHECK_FALSE(d.has(Severity::Error));
-    CHECK(text(d).find("mode=9?") != std::string::npos);
+    CHECK(text(d).find("state=9?|ARMED|GATE_ENABLED") != std::string::npos);
 
-    s = status();
-    s.armed = 2;
-    CHECK(flagged(dec(Proto::Lora, s), Severity::Error, "armed 2"));
-    s = status();
-    s.gate_state = 7;
-    CHECK(flagged(dec(Proto::Lora, s), Severity::Error, "gate 7"));
-    s = status();
-    s.fault_flags = boat::mode::fault::MOTOR_FAILURE | 0x0100;
+    s = self_status();
+    s.state |= 0x40;  // reserved bit 6
     d = dec(Proto::Lora, s);
-    CHECK(flagged(d, Severity::Warning, "undefined bits 0x0100"));
+    CHECK(flagged(d, Severity::Warning, "state has reserved bits 0x40 set"));
     CHECK_FALSE(d.has(Severity::Error));
+    CHECK(text(d).find("|RSV0x40") != std::string::npos);
 
-    s = status();
+    s = self_status();
+    s.faults = boat::mode::fault::MOTOR_FAILURE | 0x80;
+    d = dec(Proto::Lora, s);
+    CHECK(flagged(d, Severity::Warning, "faults has undefined bits 0x80"));
+    CHECK_FALSE(d.has(Severity::Error));
+    CHECK(text(d).find("faults=MOTOR_FAILURE|BIT7") != std::string::npos);
+
+    s = self_status();
     s.gs_rssi = 5;
     CHECK(flagged(dec(Proto::Lora, s), Severity::Error, "gs_rssi"));
-    s = status();
+    s = self_status();
+    s.gs_rssi = -151;
+    CHECK(flagged(dec(Proto::Lora, s), Severity::Error, "gs_rssi"));
+    s = self_status();
     s.gs_snr = 31;
     CHECK(flagged(dec(Proto::Lora, s), Severity::Error, "gs_snr"));
-    s = status();
-    s.tx_id = 0;
-    CHECK(flagged(dec(Proto::Lora, s), Severity::Error, "tx_id 0"));
+    s.gs_snr = -30;
+    CHECK(clean(dec(Proto::Lora, s)));
+
+    // SetMode: unknown mode warns, armed must be 0 or 1.
+    d = dec(Proto::Lora, lora::SetMode{1, 9, 0});
+    CHECK(flagged(d, Severity::Warning, "unknown mode 9"));
+    CHECK_FALSE(d.has(Severity::Error));
+    CHECK(flagged(dec(Proto::Lora, lora::SetMode{1, 0, 2}), Severity::Error, "armed 2"));
 
     // Serial Status links may include the ground station.
     ser::Status st{};
@@ -302,8 +354,25 @@ TEST_CASE("plausibility: motor command and config", "[mon]") {
 
     CHECK(clean(dec(Proto::Serial, config())));
     ser::Config c = config();
-    c.lora_bw_hz = 7812;  // 7.8125 kHz, rounded by the firmware: fine
+    c.lora_bw_hz = 7812;  // 7.8125 kHz, rounded by the firmware: a LoRa bandwidth...
+    Decoded d = dec(Proto::Serial, c);
+    CHECK_FALSE(d.has(Severity::Error));
+    // ...but not the fleet's: valid settings that differ from boat_defs/lora.h
+    // leave the boat unable to hear or be heard.
+    CHECK(flagged(d, Severity::Warning, "bw 7812 Hz differs from boat_defs/lora.h (500000 Hz)"));
+    c = config();
+    c.lora_bw_hz = 499000;  // within 1%: the same bandwidth
     CHECK(clean(dec(Proto::Serial, c)));
+    c = config();
+    c.lora_sf = 9;
+    d = dec(Proto::Serial, c);
+    CHECK(flagged(d, Severity::Warning, "sf 9 differs from boat_defs/lora.h (SF6)"));
+    CHECK_FALSE(d.has(Severity::Error));
+    c = config();
+    c.lora_freq_hz = 915500000;
+    CHECK(flagged(dec(Proto::Serial, c), Severity::Warning,
+                  "freq 915500000 Hz differs from boat_defs/lora.h (915000000 Hz)"));
+    c = config();
     c.lora_bw_hz = 100000;
     CHECK(flagged(dec(Proto::Serial, c), Severity::Error, "not a LoRa bandwidth"));
     c = config();

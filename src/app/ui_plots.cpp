@@ -26,15 +26,11 @@ int time_formatter(double value, char* buf, int size, void*) {
     return std::snprintf(buf, static_cast<size_t>(size), "%s%ld:%02ld", neg ? "-" : "", v / 60, v % 60);
 }
 
-void plot_series(const char* label, const std::deque<Sample>& data, const ImVec4& color, float weight,
-                 ImPlotMarker marker = ImPlotMarker_None) {
+void plot_series(const char* label, const std::deque<Sample>& data, const ImVec4& color, float weight) {
     if (data.empty()) return;
     ImPlotSpec spec;
     spec.LineColor = color;
     spec.LineWeight = weight;
-    spec.Marker = marker;
-    spec.MarkerSize = 2.5f;
-    spec.MarkerFillColor = color;
     // The getter only reads; ImPlot's API takes void*.
     ImPlot::PlotLineG(label, sample_getter, const_cast<std::deque<Sample>*>(&data), static_cast<int>(data.size()),
                       spec);
@@ -97,15 +93,17 @@ void App::draw_plots() {
             }
             ImPlot::EndPlot();
         }
-        if (ImPlot::BeginPlot("RSSI (solid: base hears boat, dots: boat hears base)", ImVec2(-1, h), pf)) {
+        if (ImPlot::BeginPlot("RSSI (thick: base hears boat, thin: boat hears base)", ImVec2(-1, h), pf)) {
             setup("dBm", false);
             for (const auto& [id, b] : boats) {
                 const std::string label = boat_label(id);
                 plot_series(label.c_str(), b.rx_rssi_history, boat_color(id), 2.0f * s);
                 ImVec4 c = boat_color(id);
-                c.w = 0.65f;
+                c.w = 0.55f;
+                // Every SelfStatus (each TDMA cycle) carries it, so it is a
+                // line like the base's view, only thinner.
                 const std::string gs = label + " at boat";
-                plot_series(gs.c_str(), b.gs_rssi_history, c, 1.0f * s, ImPlotMarker_Circle);
+                plot_series(gs.c_str(), b.gs_rssi_history, c, 1.0f * s);
             }
             ImPlot::EndPlot();
         }

@@ -12,7 +12,8 @@
 #include <basestation/core/frame_log.h>
 #include <basestation/core/frame_splitter.h>
 #include <basestation/core/serial_port.h>
-#include <basestation/proto/codec.h>
+
+#include <wirelink/wire.h>
 
 #include <array>
 #include <atomic>
@@ -60,7 +61,7 @@ public:
     template <class T>
     bool send_msg(const T& msg) {
         wirelink::Frame f{};
-        if (!codec::pack(msg, f)) return false;
+        if (!wirelink::codec::pack(msg, f)) return false;
         return send(f);
     }
 

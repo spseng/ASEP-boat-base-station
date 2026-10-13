@@ -5,10 +5,11 @@
 #include <basestation/core/link_session.h>
 #include <basestation/core/teleop.h>
 #include <basestation/core/teleop_sender.h>
-#include <basestation/proto/codec.h>
-#include <basestation/proto/lora.h>
+#include <basestation/proto/state.h>
 
 #include <boat_defs/ids.h>
+
+#include <wirelink/wire.h>
 
 #include "pty_peer.h"
 
@@ -31,7 +32,7 @@ std::vector<lora::Command> commands(const std::vector<PtyPeer::Received>& rx) {
     std::vector<lora::Command> out;
     for (const auto& r : rx) {
         lora::Command c{};
-        REQUIRE(codec::unpack(r.frame, c));
+        REQUIRE(wirelink::codec::unpack(r.frame, c));
         out.push_back(c);
     }
     return out;

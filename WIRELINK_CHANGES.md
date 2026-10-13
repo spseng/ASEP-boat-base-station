@@ -5,78 +5,80 @@ This repository never modifies `ASEP-boat` (it is a read-only submodule under
 is listed here for you to apply upstream. Each item says what to change, why,
 and what the base station does in the meantime.
 
-Checked against ASEP-boat `06bce72` ("update cmake mislink").
+Checked against ASEP-boat `7b59f1e` ("update lora msgs").
 
----
-
-## 1. `wire.h`: `Reader`/`Writer` cannot encode `int16_t` or nested structs (blocking for `lora.h`)
-
-**Problem.** `wirelink::codec::Reader` and `Writer` only have overloads for
-`uint8/16/32/64`, `int32`, `float`, `bytes::Payload` and `List<T, N>`; every
-other type hits the deleted catch-all template. The draft `lora.h` uses both
-missing cases:
-
-- `Command::lin_vel` / `ang_vel` are `int16_t`, which does not compile.
-- `SelfStatus` calls `f(self)` on a `PeerEntry`, and `Status` calls
-  `f(links)` on a bare `LinkStatus`. Nested structs are only handled inside
-  a `List`.
-
-Nothing upstream calls `pack`/`unpack` on a LoRa message yet, so the build
-doesn't break. It will as soon as the firmware or the Pi packs one.
-
-**Suggested fix.** Add an `int16_t` overload, and **replace** the deleted
-catch-all template with one that recurses into `fields()`:
-
-```cpp
-// Reader: replace  template <class T> void operator()(T&) = delete;
-void operator()(int16_t& v) { v = static_cast<int16_t>(static_cast<uint16_t>(get(2))); }
-// Any nested message struct (has fields()); other types still fail to compile here.
-template <class T> void operator()(T& v) { v.fields(*this); }
-
-// Writer: replace  template <class T> void operator()(T) = delete;
-void operator()(int16_t v) { put(static_cast<uint16_t>(v), 2); }
-template <class T> void operator()(T& v) { v.fields(*this); }
-```
-
-Replace the deleted template rather than adding a second one next to it: a
-`T&` template and a `T` template side by side are ambiguous for lvalues. I
-compiled this patch against `06bce72`'s `wire.h`. The draft
-`lora::Command`, `SelfStatus` and `Status` and `serial::PeerTable` all pack,
-and `int16_t -1234` and nested negative `int32` values round-trip. An
-unsupported type such as `double` still fails at compile time.
-
-**Meanwhile.** `src/proto/basestation/proto/codec.h` is a superset visitor
-used by the base station. `tests/test_codec.cpp` checks that it produces
-byte-for-byte the same output as upstream's `Writer` for every message
-upstream can encode, so the two stay compatible.
-
----
-
-## 2. `msg/lora.h`: adopt the revised message set
-
-The draft was a placeholder, and you asked me to make it meaningful. The
-revised set is in `src/proto/basestation/proto/lora.h`. To adopt it, copy it
-over `wirelink/msg/lora.h` and rename the namespace
-`basestation::lora` → `wirelink::msg::lora`.
-
-| Type | Message | Change from the draft |
+| § | Item | State |
 |---|---|---|
-| 0 | `Disable {rx_id}` | Now carries `rx_id` (255 = every boat). The draft had no struct. |
-| 1 | `SelfStatus {PeerEntry self}` | Unchanged. |
-| 2 | `Command {rx_id, lin_vel, ang_vel}` | `age_ms` dropped (nobody knew what it was for; `seq` already exposes stale or missing commands). Units are **mm/s** and **mrad/s** per `boat_defs/units.h`; the draft's comments said m/s and rad/s. `+ang_vel` = counter-clockwise (REP 103). |
-| 3 | `Status {tx_id, mode, armed, gate_state, fault_flags, heading_deg, gs_rssi, gs_snr}` | Rewritten. The draft's single `LinkStatus` and `age_ms` are replaced by what the ground station displays. `gs_rssi`/`gs_snr` are how well the boat hears the ground station, which is the teleop link margin. `heading_deg` is **an addition beyond what we discussed**. Drop it if you'd rather not spend 4 bytes; the UI falls back to course derived from the track. |
-| 4 | `Reenable {rx_id}` | New. The boat's ESP32 passes it up to the Pi, which decides and tells its ESP32 to re-enable. |
-| 5 | `SetMode {rx_id, mode, armed}` | New. Enums from `boat_defs/mode.h`. Handled by the Pi. |
+| 1 | `wire.h`: `int16_t` and nested structs | **ADOPTED** in `7b59f1e` |
+| 2 | `msg/lora.h`: a meaningful LoRa message set | **ADOPTED** in `7b59f1e` (upstream's own version) |
+| 3 | Reserve frame types `>= 0x80`; what the base ESP32 must do | open |
+| 4 | Adding modes | information |
+| 5 | Minor items | open |
 
-Encoded sizes: 1 / 17 / 5 / 18 / 1 / 3 bytes. All are well under
-`MAX_LORA_PAYLOAD = 64` (checked in `tests/test_codec.cpp`).
+---
+
+## 1. `wire.h`: `int16_t` and nested structs: ADOPTED in `7b59f1e`
+
+`Reader` / `Writer` now have `int16_t` overloads, and the deleted catch-all
+template was replaced by one that recurses into `fields()`. Every LoRa
+message, `serial::PeerTable` and the base station's own 0x80+ messages pack
+and unpack with `wirelink::codec::pack` / `unpack`.
+
+**Base station.** Its stop-gap codec (`src/proto/basestation/proto/codec.h`)
+and the byte-compatibility test that guarded it are gone. Everything now
+uses upstream's codec directly. `unpack` checks `r.pos == frame.len` just as
+the old codec did, so a layout mismatch still fails to decode instead of
+producing plausible garbage.
+
+---
+
+## 2. `msg/lora.h`: the LoRa message set: ADOPTED in `7b59f1e`
+
+Upstream adopted its own version of the proposal, and the base station now
+uses `wirelink::msg::lora` as is. Its proposal (`src/proto/basestation/proto/lora.h`)
+is deleted. Compared with the proposal, `Status` was folded into
+`SelfStatus`, which each boat sends once per TDMA cycle, and type 3 is now
+`Heartbeat`:
+
+| Type | Message |
+|---|---|
+| 0 | `Disable {rx_id}` |
+| 1 | `SelfStatus {PeerEntry self, float heading_deg, uint8 state, uint8 faults, float gs_rssi, float gs_snr}` |
+| 2 | `Command {rx_id, int16 lin_vel mm/s, int16 ang_vel mrad/s}` |
+| 3 | `Heartbeat {}` |
+| 4 | `Reenable {rx_id}` |
+| 5 | `SetMode {rx_id, mode, armed}` |
+
+`state` packs mode (bits 0-3), armed (bit 4) and gate enabled (bit 5);
+bits 6-7 are reserved. The base station decodes it in
+`src/proto/basestation/proto/state.h`. Encoded sizes are 1 / 31 / 5 / 0 / 1 / 3
+bytes, all well under `MAX_LORA_PAYLOAD = 64`.
+
+Radio plan (agreed): SF6 / 500 kHz (`boat_defs/lora.h`), a 10 Hz cycle of
+4 slots: 3 boats and the land station. Each boat sends one `SelfStatus` per
+cycle. In its slot the land station (base ESP32) transmits exactly one
+frame: `Disable` > `Reenable` / `SetMode` > the latest `Command` >
+`Heartbeat` when idle. See §3 and the README.
+
+Small follow-ups for `lora.h`, none of them blocking:
+
+- **Document the NaN conventions** next to the fields: `heading_deg` NaN =
+  no compass; `gs_rssi` / `gs_snr` NaN = this boat has not heard a land frame
+  yet. The base station relies on both (shows course over ground, and `-`).
+- **`Heartbeat::fields(F& f) {}`** triggers `-Wunused-parameter` in every
+  translation unit that packs a Heartbeat. Drop the name: `fields(F&) {}`.
+  Meanwhile the base station includes the wirelink and boat_defs headers as
+  SYSTEM headers so upstream warnings don't break its zero-warning build.
 
 Consequences on the boat side (not implemented here):
+
 - The boat's ESP32 parses `Disable` itself. It must check `rx_id` against
   its own ID and against `BROADCAST_ID`.
 - `Command`, `Reenable` and `SetMode` are passed up to the Pi as serial msg 5
   (`ReceivedCommand`, still a TODO upstream).
-- Each boat sends `Status` at a low rate (the simulator uses 1 Hz).
+- `SetMode.mode` is a full byte, but `state` reports only 4 bits: a boat
+  should refuse modes above 15. The base station's raw mode picker stops
+  at 15.
 
 ---
 
@@ -89,25 +91,36 @@ LoRa:
 | Type | Message | When |
 |---|---|---|
 | `0x80` | `RxInfo {rssi, snr}` | Immediately after each relayed LoRa frame. The UI attaches it to the frame just before it. |
-| `0x81` | `BaseStatus {uptime_ms, rx_ok, rx_bad, tx_count}` | About 1 Hz. |
+| `0x81` | `BaseStatus {uptime_ms, rx_ok, rx_bad, tx_count}` | About 1 Hz. `tx_count` = land frames transmitted (~10 per second with the TDMA plan). |
 | `0x82` | `BasePosition {int32 lat, int32 lon (1e-7 deg), uint8 fix_quality (0 = no fix), uint8 satellites}` | About 1 Hz, only if the base ESP32 has a GPS. A fix overrides the position set by hand in the UI. |
 
 All are optional; the UI still works if the ESP32 never sends them.
 If you agree, add a comment to `lora.h` (or `framing.h`) reserving
 `0x80–0xFF` so a future LoRa type never collides.
 
-**Behaviour the base station expects from `firmware/src/ground`.** It relays
-wirelink frames between USB serial and LoRa without changing them, in both
-directions. The `seq` numbers stay the sender's own; the UI counts loss per
-boat and per type from them. The UI's default serial rate is
-`boat::serial::BAUD_RATE` (115200); it can be changed in the UI.
+**Behaviour the base station expects from `firmware/src/ground`.**
+
+- **LoRa → USB:** relay every frame received from a boat unchanged (the
+  boat's own `seq`; the UI counts loss per boat and per type from it),
+  followed by `RxInfo`. Do not echo the base's own transmissions.
+- **USB → LoRa:** the app sends Commands at the teleop rate (10 Hz),
+  `Disable` three times 100 ms apart, `Reenable` / `SetMode` once, and never
+  `Heartbeat`. In each land slot transmit exactly **one** frame from what
+  arrived since the previous slot: any queued `Disable` first, then
+  `Reenable` / `SetMode` in arrival order, then the **latest** `Command`
+  (older ones are replaced, not queued), else a `Heartbeat` of its own.
+  Relayed frames keep the app's `seq`. `asep_fake_base` implements exactly
+  this and can serve as a reference.
+- The UI's default serial rate is `boat::serial::BAUD_RATE` (115200); it can
+  be changed in the UI.
 
 ---
 
 ## 4. Modes: adding new ones (e.g. calibration)
 
-`SetMode {rx_id, mode, armed}` and `Status.mode` carry the raw `uint8_t`
-value of `boat::mode::Mode`, so adding a mode needs **no protocol change**:
+`SetMode {rx_id, mode, armed}` and the mode bits of `SelfStatus.state` carry
+the raw value of `boat::mode::Mode`, so adding a mode needs **no protocol
+change**, as long as it stays below 16 (4 bits in `state`):
 
 1. Add the value to `boat_defs/mode.h` upstream, e.g. `CALIBRATION = 4`.
 2. Handle it on the boat (the Pi's `mode_manager`).
@@ -116,7 +129,7 @@ value of `boat::mode::Mode`, so adding a mode needs **no protocol change**:
 
 Until step 3 is done the base station still works with the new mode: a
 reported mode it doesn't know is shown as `MODE 4`, and the *Set mode*
-picker has an "Other (raw value)" entry that sends any number 0–255.
+picker has an "Other (raw value)" entry that sends any number 0–15.
 
 Keep "armed" separate from mode, as it is now: a boat can be in
 AUTONOMOUS but disarmed, which is the safe way to switch modes before
@@ -129,6 +142,19 @@ the point to add a dedicated message instead of stretching `SetMode`.
 
 ## 5. Minor / for information
 
+- **Command timeout on the boat: at least 2-3 TDMA cycles (200-300 ms).**
+  A `Command` only goes out when the land slot has nothing more urgent, and
+  LoRa loses packets, so one missing cycle is normal. A timeout of a single
+  cycle would make teleop stutter. The simulator uses 500 ms.
+- **Serial `Config` LoRa fields vs `boat_defs/lora.h`.** `serial::Config`
+  still carries `lora_sf`, `lora_bw_hz` and `lora_freq_hz`, while the fleet's
+  settings are now compile-time constants in `boat_defs/lora.h` (in other
+  units: MHz / kHz floats vs Hz integers). Two sources of truth can
+  disagree, and a boat whose radio differs from the fleet's is simply
+  inaudible. Recommended: remove the three fields from `Config` and have the
+  ESP32 use `boat::lora::config`. If they must stay (e.g. for field tests),
+  have the Pi fill them from `boat_defs/lora.h`. Meanwhile `wl_mon --proto
+  serial` warns when they differ.
 - **`Link::feed` cannot report corrupt frames.** It returns `nullopt` for
   both "frame not finished" and "frame failed CRC/COBS", so a receiver can't
   count bad frames. The base station uses its own splitter
@@ -142,5 +168,7 @@ the point to add a dedicated message instead of stretching `SetMode`.
   `codec::pack` sets only `frame.len`, and `framing::wrap` reads only
   `frame.len`. It works, but it's easy to set the wrong one. Consider
   dropping one.
+- **`Heartbeat`'s unused parameter** and the **0x80+ reservation comment**:
+  see §2 and §3.
 - ~~`wirelink/CMakeLists.txt` listed `src/parser.cpp`~~. Fixed upstream in
   `06bce72`.

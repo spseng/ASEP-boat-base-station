@@ -30,7 +30,7 @@ struct SimBoat {
     boat::mode::Mode mode = boat::mode::Mode::MANUAL;
     boat::mode::ArmedState armed = boat::mode::ArmedState::DISARMED;
     boat::mode::GateState gate = boat::mode::GateState::ENABLED;
-    uint16_t fault_flags = boat::mode::fault::NONE;
+    uint8_t faults = boat::mode::fault::NONE;
 
     // Last teleop command heard from land.
     int16_t cmd_lin_mm = 0;
@@ -48,11 +48,6 @@ struct SimBoat {
 
     // Per-type tx sequence counters, like a real boat's radio task.
     uint8_t seq[256] = {};
-
-    // TDMA-ish schedule.
-    double next_slot_s = 0;
-    double next_status_s = 0;
-    bool status_now = false;  // state changed: send Status in the next slot
 
     double wander_phase = 0;
 };

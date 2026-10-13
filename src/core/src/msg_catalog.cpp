@@ -1,14 +1,17 @@
 #include <basestation/core/msg_catalog.h>
 
 #include <basestation/proto/base.h>
-#include <basestation/proto/lora.h>
 #include <basestation/proto/names.h>
+#include <basestation/proto/state.h>
 
 #include <boat_defs/esc.h>
 #include <boat_defs/ids.h>
+#include <boat_defs/lora.h>
 #include <boat_defs/mode.h>
 
+#include <wirelink/msg/lora.h>
 #include <wirelink/msg/serial.h>
+#include <wirelink/wire.h>
 
 #include <algorithm>
 #include <cctype>
@@ -21,7 +24,7 @@ namespace basestation::catalog {
 
 namespace {
 
-namespace lora = basestation::lora;
+namespace lora = wirelink::msg::lora;
 namespace base = basestation::base;
 namespace ser = wirelink::msg::serial;
 namespace ids = boat::ids;
@@ -112,7 +115,7 @@ struct Flattener {
 
     template <class T>
     void operator()(T& v) {
-        if constexpr (codec::detail::has_fields<T, Flattener>::value) {
+        if constexpr (detail::has_fields<T, Flattener>::value) {
             v.fields(*this);
         } else if constexpr (std::is_floating_point_v<T>) {
             const FieldSpec* s = next();
@@ -206,6 +209,17 @@ struct Flattener {
             case Kind::Mode: return names::find_mode(raw) ? names::find_mode(raw)->name : text + "?";
             case Kind::Armed: return raw <= 1 ? names::armed_name(raw) : text + "?";
             case Kind::Gate: return raw <= 1 ? names::gate_name(raw) : text + "?";
+            case Kind::State: {
+                // AUTONOMOUS|ARMED|GATE_ENABLED; unknown mode as "9?", set
+                // reserved bits appended as "|RSV0xC0".
+                const state::State st = state::decode(raw);
+                std::string out = names::find_mode(st.mode) ? names::find_mode(st.mode)->name
+                                                            : std::to_string(st.mode) + "?";
+                out += "|" + names::armed_name(st.armed);
+                out += st.is_tripped() ? "|GATE_TRIPPED" : "|GATE_ENABLED";
+                if (st.reserved) out += fmt("|RSV0x%02X", unsigned(st.reserved));
+                return out;
+            }
             case Kind::Faults: {
                 const auto flags = static_cast<uint16_t>(v);
                 if (flags == 0) return "none";
@@ -252,11 +266,20 @@ struct Flattener {
             case Kind::Gate:
                 if (raw > 1) error(p, fmt("%s %u is not a GateState", name.c_str(), unsigned(raw)));
                 break;
+            case Kind::State: {
+                // Armed and gate are single bits and always valid.
+                const state::State st = state::decode(raw);
+                if (!names::find_mode(st.mode)) warn(p, fmt("unknown mode %u", unsigned(st.mode)));
+                if (st.reserved)
+                    warn(p, fmt("%s has reserved bits 0x%02X set", name.c_str(), unsigned(st.reserved)));
+                break;
+            }
             case Kind::Faults: {
-                uint16_t known = 0;
+                // uint8 on LoRa (SelfStatus), uint16 on the serial link (Status).
+                unsigned known = 0;
                 for (const auto& f : names::FAULTS) known |= f.bit;
-                const auto bad = static_cast<uint16_t>(static_cast<uint16_t>(v) & ~known);
-                if (bad) warn(p, fmt("%s has undefined bits 0x%04X", name.c_str(), unsigned(bad)));
+                const unsigned bad = static_cast<unsigned>(v) & ~known;
+                if (bad) warn(p, fmt("%s has undefined bits 0x%0*X", name.c_str(), bad > 0xFF ? 4 : 2, bad));
                 break;
             }
             default: break;
@@ -274,7 +297,7 @@ void no_check(const T&, Problems&) {}
 template <class T, void (*Check)(const T&, Problems&) = no_check<T>>
 void decode_as(const MsgSpec& spec, const wirelink::Frame& f, Decoded& out) {
     T m{};
-    codec::Reader r{f.payload.data.data(), f.len};
+    wirelink::codec::Reader r{f.payload.data.data(), f.len};
     r(m);
     if (!r.ok || r.pos != f.len) {
         // The two sides disagree on the layout (or the frame is damaged in a
@@ -322,24 +345,37 @@ void check_config(const ser::Config& m, Problems& p) {
     const bool ok = std::any_of(std::begin(BW), std::end(BW),
                                 [&](double bw) { return std::fabs(m.lora_bw_hz - bw) <= 0.01 * bw; });
     if (!ok) error(p, fmt("lora_bw %u Hz is not a LoRa bandwidth", unsigned(m.lora_bw_hz)));
+
+    // Valid but different from the fleet's radio settings: the boat's ESP32
+    // would neither hear nor be heard by anyone else.
+    namespace cfg = boat::lora::config;
+    const char* why = "differs from boat_defs/lora.h";
+    if (m.lora_sf != cfg::SPREADING_FACTOR)
+        warn(p, fmt("sf %u %s (SF%u): boat inaudible", unsigned(m.lora_sf), why, unsigned(cfg::SPREADING_FACTOR)));
+    const double bw_hz = static_cast<double>(cfg::BANDWIDTH) * 1e3;
+    if (std::fabs(m.lora_bw_hz - bw_hz) > 0.01 * bw_hz)
+        warn(p, fmt("bw %u Hz %s (%.0f Hz): boat inaudible", unsigned(m.lora_bw_hz), why, bw_hz));
+    const double freq_hz = static_cast<double>(cfg::FREQUENCY) * 1e6;
+    if (std::fabs(m.lora_freq_hz - freq_hz) > 1e3)
+        warn(p, fmt("freq %u Hz %s (%.0f Hz): boat inaudible", unsigned(m.lora_freq_hz), why, freq_hz));
 }
 
 template <class T>
 uint8_t type_of() { return static_cast<uint8_t>(T::TYPE); }
 
 std::vector<MsgSpec> lora_messages() {
+    // NaN = unknown for heading (no compass) and gs_* (land not heard yet);
+    // the scalar has no such meaning, so NaN there is an error.
     std::vector<FieldSpec> self;
     peer_entry(self);
+    self.insert(self.end(), {nan_ok(in(num("heading", "deg", 1), 0, 360)), of("state", Kind::State),
+                             of("faults", Kind::Faults), nan_ok(rssi("gs_rssi")), nan_ok(snr("gs_snr"))});
     return {
         {type_of<lora::Disable>(), "Disable", {of("rx_id", Kind::RxId)}, -1, decode_as<lora::Disable>},
         {type_of<lora::SelfStatus>(), "SelfStatus", self, 0, decode_as<lora::SelfStatus>},
         {type_of<lora::Command>(), "Command",
          {of("rx_id", Kind::RxId), num("lin", "mm/s"), num("ang", "mrad/s")}, -1, decode_as<lora::Command>},
-        {type_of<lora::Status>(), "Status",
-         {of("tx_id", Kind::BoatId), of("mode", Kind::Mode), of("armed", Kind::Armed), of("gate", Kind::Gate),
-          of("faults", Kind::Faults), nan_ok(in(num("heading", "deg", 1), 0, 360)), nan_ok(rssi("gs_rssi")),
-          nan_ok(snr("gs_snr"))},
-         0, decode_as<lora::Status>},
+        {type_of<lora::Heartbeat>(), "Heartbeat", {}, -1, decode_as<lora::Heartbeat>},
         {type_of<lora::Reenable>(), "Reenable", {of("rx_id", Kind::RxId)}, -1, decode_as<lora::Reenable>},
         {type_of<lora::SetMode>(), "SetMode",
          {of("rx_id", Kind::RxId), of("mode", Kind::Mode), of("armed", Kind::Armed)}, -1,

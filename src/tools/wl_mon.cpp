@@ -12,6 +12,7 @@
 #include <basestation/core/msg_catalog.h>
 #include <basestation/core/serial_port.h>
 
+#include <boat_defs/lora.h>
 #include <boat_defs/serial.h>
 
 #include <algorithm>
@@ -66,13 +67,20 @@ void usage(std::FILE* out) {
         "                         lora    the base-station ESP32's USB link: LoRa\n"
         "                                 messages (types 0-5) + base-local (0x80+)\n"
         "                         serial  a boat's Pi <-> ESP32 link (types 1-10)\n"
-        "                       The two sets reuse type numbers (3 is Status on lora,\n"
-        "                       PeerTable on serial), so pick the one for the link.\n"
+        "                       The two sets reuse type numbers (3 is Heartbeat on\n"
+        "                       lora, PeerTable on serial), so pick the one for the link.\n"
         "  --baud N             baud rate (default %u)\n"
         "  --type NAME          echo: show only this message (repeatable)\n"
         "  --no-color           no colors (also off when stdout is not a terminal)\n"
-        "  --help               show this help\n",
-        unsigned(boat::serial::BAUD_RATE));
+        "  --help               show this help\n"
+        "\n"
+        "Radio settings: with --proto serial, Config's lora_sf / lora_bw_hz /\n"
+        "lora_freq_hz are also compared with boat_defs/lora.h (SF%u, %.0f kHz,\n"
+        "%.0f MHz) and a difference is a WARN. They are valid LoRa settings, but\n"
+        "a boat whose radio differs from the fleet's can neither hear the others\n"
+        "nor be heard: it is inaudible, as if switched off.\n",
+        unsigned(boat::serial::BAUD_RATE), unsigned(boat::lora::config::SPREADING_FACTOR),
+        static_cast<double>(boat::lora::config::BANDWIDTH), static_cast<double>(boat::lora::config::FREQUENCY));
 }
 
 #if defined(__GNUC__)

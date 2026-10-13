@@ -3,11 +3,12 @@
 #include <basestation/core/commander.h>
 #include <basestation/core/frame_splitter.h>
 #include <basestation/core/link_session.h>
-#include <basestation/proto/codec.h>
-#include <basestation/proto/lora.h>
+#include <basestation/proto/state.h>
 
 #include <boat_defs/ids.h>
 #include <boat_defs/mode.h>
+
+#include <wirelink/wire.h>
 
 #include "pty_peer.h"
 
@@ -52,7 +53,7 @@ TEST_CASE("Commander: disable is sent at once and repeated", "[model][commander]
     CHECK(pty.read_for(90ms).empty());  // exactly disable_repeats copies
     for (size_t i = 0; i < rx.size(); ++i) {
         lora::Disable d{};
-        REQUIRE(codec::unpack(rx[i].frame, d));
+        REQUIRE(wirelink::codec::unpack(rx[i].frame, d));
         CHECK(d.rx_id == 3);
         CHECK(rx[i].frame.seq == i);  // LinkSession numbers each copy
     }
@@ -77,7 +78,7 @@ TEST_CASE("Commander: disable to ALL", "[model][commander][pty]") {
     const auto rx = pty.read_for(60ms);
     REQUIRE(rx.size() == 1);
     lora::Disable d{};
-    REQUIRE(codec::unpack(rx[0].frame, d));
+    REQUIRE(wirelink::codec::unpack(rx[0].frame, d));
     CHECK(d.rx_id == boat::ids::BROADCAST_ID);
     CHECK(count_events(log, EventLevel::Warn, "Sent DISABLE to ALL") == 1);
 }
@@ -93,7 +94,7 @@ TEST_CASE("Commander: reenable and set_mode are sent once", "[model][commander][
     auto rx = pty.read(1, 200ms);
     REQUIRE(rx.size() == 1);
     lora::Reenable r{};
-    REQUIRE(codec::unpack(rx[0].frame, r));
+    REQUIRE(wirelink::codec::unpack(rx[0].frame, r));
     CHECK(r.rx_id == 2);
     CHECK(count_events(log, EventLevel::Info, "Sent REENABLE to boat 2") == 1);
 
@@ -101,7 +102,7 @@ TEST_CASE("Commander: reenable and set_mode are sent once", "[model][commander][
     rx = pty.read(1, 200ms);
     REQUIRE(rx.size() == 1);
     lora::SetMode m{};
-    REQUIRE(codec::unpack(rx[0].frame, m));
+    REQUIRE(wirelink::codec::unpack(rx[0].frame, m));
     CHECK(m.rx_id == 1);
     CHECK(m.mode == static_cast<uint8_t>(boat::mode::Mode::AUTONOMOUS));
     CHECK(m.armed == static_cast<uint8_t>(boat::mode::ArmedState::ARMED));
@@ -112,7 +113,7 @@ TEST_CASE("Commander: reenable and set_mode are sent once", "[model][commander][
 template <class T>
 bool is(const PtyPeer::Received& r, uint8_t rx_id) {
     T m{};
-    return codec::unpack(r.frame, m) && m.rx_id == rx_id;
+    return wirelink::codec::unpack(r.frame, m) && m.rx_id == rx_id;
 }
 
 TEST_CASE("Commander: reenable cancels queued disable repeats", "[model][commander][pty]") {

@@ -429,11 +429,8 @@ void App::draw_fleet_view() {
                     y += ImGui::GetFontSize();
                 };
                 if (stale) line("stale", colors::warn);
-                if (b.status) {
-                    if (b.status->gate_state == static_cast<uint8_t>(boat::mode::GateState::TRIPPED))
-                        line("TRIPPED", colors::danger);
-                    if (b.status->fault_flags) line(names::fault_list(b.status->fault_flags).c_str(), colors::warn);
-                }
+                if (b.state.is_tripped()) line("TRIPPED", colors::danger);
+                if (b.self_status->faults) line(names::fault_list(b.self_status->faults).c_str(), colors::warn);
                 if (old_fix) line("old fix", colors::warn);
             }
         }
@@ -444,24 +441,19 @@ void App::draw_fleet_view() {
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !base_place_mode_) select_boat(hovered->id);
             ImGui::BeginTooltip();
             ImGui::TextColored(boat_color(hovered->id), "Boat %u", unsigned(hovered->id));
-            if (b.status) {
-                const auto& st = *b.status;
-                const bool known = names::find_mode(st.mode) != nullptr;
-                ImGui::Text("Mode:");
-                ImGui::SameLine();
-                ImGui::TextColored(known ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : colors::warn, "%s",
-                                   names::mode_name(st.mode).c_str());
-                ImGui::Text("Armed: %s", names::armed_name(st.armed).c_str());
-                const bool tripped = st.gate_state == static_cast<uint8_t>(boat::mode::GateState::TRIPPED);
-                ImGui::Text("Gate:");
-                ImGui::SameLine();
-                ImGui::TextColored(tripped ? colors::danger : colors::ok, "%s",
-                                   names::gate_name(st.gate_state).c_str());
-                if (st.fault_flags)
-                    ImGui::TextColored(colors::warn, "Faults: %s", names::fault_list(st.fault_flags).c_str());
-            } else {
-                ImGui::TextDisabled("No Status received yet");
-            }
+            // Only boats with a SelfStatus are on the map.
+            const state::State& st = b.state;
+            const bool known = names::find_mode(st.mode) != nullptr;
+            ImGui::Text("Mode:");
+            ImGui::SameLine();
+            ImGui::TextColored(known ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : colors::warn, "%s",
+                               names::mode_name(st.mode).c_str());
+            ImGui::Text("Armed: %s", names::armed_name(st.armed).c_str());
+            ImGui::Text("Gate:");
+            ImGui::SameLine();
+            ImGui::TextColored(st.is_tripped() ? colors::danger : colors::ok, "%s", names::gate_name(st.gate).c_str());
+            if (b.self_status->faults)
+                ImGui::TextColored(colors::warn, "Faults: %s", names::fault_list(b.self_status->faults).c_str());
             ImGui::Text("Scalar: %.2f °C", static_cast<double>(b.self_status->self.scalar));
             ImGui::Text("Position: %.1f m E, %.1f m N", hovered->e, hovered->n);
             if (base_pos_.known()) {

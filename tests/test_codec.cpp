@@ -1,8 +1,11 @@
-#include <basestation/proto/base.h>
-#include <basestation/proto/codec.h>
-#include <basestation/proto/lora.h>
+// The protocol layer on upstream wirelink::codec: every message the base
+// station sends or receives (wirelink::msg::lora + basestation::base) must
+// round-trip and have the expected wire size; plus state.h and names.h.
 
-#include <wirelink/msg/serial.h>
+#include <basestation/proto/base.h>
+#include <basestation/proto/state.h>
+
+#include <wirelink/msg/lora.h>
 #include <wirelink/wire.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -13,9 +16,8 @@
 #include <vector>
 
 using namespace basestation;
-namespace ser = wirelink::msg::serial;
-using wirelink::msg::common::LinkStatus;
 using wirelink::msg::common::PeerEntry;
+namespace codec = wirelink::codec;
 
 namespace {
 
@@ -30,6 +32,13 @@ std::vector<uint8_t> encode(const T& msg) {
     return payload_bytes(f);
 }
 
+// Encoded size of a message, in bytes on the wire (not sizeof).
+template <class T>
+size_t wire_size(const T& msg) {
+    wirelink::Frame f{};
+    return codec::pack(msg, f) ? f.len : 0;
+}
+
 // pack -> unpack -> pack must reproduce the same bytes; returns the decoded
 // message for field-level checks.
 template <class T>
@@ -37,42 +46,20 @@ T round_trip(const T& msg) {
     wirelink::Frame f{};
     REQUIRE(codec::pack(msg, f));
     CHECK(f.type == static_cast<uint8_t>(T::TYPE));
-    CHECK(f.payload.len == f.len);
-    CHECK(f.len == codec::wire_size(msg));
     T out{};
     REQUIRE(codec::unpack(f, out));
     CHECK(encode(out) == payload_bytes(f));
     return out;
 }
 
-// Our codec and upstream's must agree byte for byte and decode each other.
-template <class T>
-void check_upstream_compat(const T& msg) {
-    wirelink::Frame ours{};
-    wirelink::Frame theirs{};
-    REQUIRE(codec::pack(msg, ours));
-    REQUIRE(wirelink::codec::pack(msg, theirs));
-    CHECK(ours.type == theirs.type);
-    REQUIRE(ours.len == theirs.len);
-    CHECK(payload_bytes(ours) == payload_bytes(theirs));
-
-    T from_theirs{};
-    REQUIRE(codec::unpack(theirs, from_theirs));
-    CHECK(encode(from_theirs) == payload_bytes(theirs));
-
-    T from_ours{};
-    REQUIRE(wirelink::codec::unpack(ours, from_ours));
-    wirelink::Frame again{};
-    REQUIRE(wirelink::codec::pack(from_ours, again));
-    CHECK(payload_bytes(again) == payload_bytes(ours));
-}
-
 PeerEntry peer(uint8_t id) {
     return PeerEntry{id, -337123456 - id, 1512345678 + id, 0.25f * id, 1000u * id};
 }
 
-LinkStatus link(uint8_t id) {
-    return LinkStatus{id, -97.5f - id, 7.25f + id, 3u * id};
+lora::SelfStatus self_status(uint8_t id) {
+    using namespace boat::mode;
+    return lora::SelfStatus{peer(id), 271.5f, state::encode(Mode::AUTONOMOUS, ArmedState::ARMED, GateState::ENABLED),
+                            fault::GPS_FAILURE, -80.0f, 9.5f};
 }
 
 }  // namespace
@@ -83,12 +70,28 @@ TEST_CASE("lora messages round-trip", "[codec]") {
         CHECK(out.rx_id == 0xFF);
     }
     SECTION("SelfStatus") {
-        const auto out = round_trip(lora::SelfStatus{peer(3)});
+        const auto out = round_trip(self_status(3));
         CHECK(out.self.id == 3);
         CHECK(out.self.lat == -337123459);
         CHECK(out.self.lon == 1512345681);
         CHECK(out.self.scalar == 0.75f);
         CHECK(out.self.age_ms == 3000u);
+        CHECK(out.heading_deg == 271.5f);
+        CHECK(out.state == 0x31);
+        CHECK(out.faults == boat::mode::fault::GPS_FAILURE);
+        CHECK(out.gs_rssi == -80.0f);
+        CHECK(out.gs_snr == 9.5f);
+    }
+    SECTION("SelfStatus with NaN fields") {
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        lora::SelfStatus s = self_status(4);
+        s.heading_deg = s.gs_rssi = s.gs_snr = nan;
+        s.faults = 0xFF;
+        const auto out = round_trip(s);
+        CHECK(std::isnan(out.heading_deg));
+        CHECK(std::isnan(out.gs_rssi));
+        CHECK(std::isnan(out.gs_snr));
+        CHECK(out.faults == 0xFF);
     }
     SECTION("Command with negative velocities") {
         const auto out = round_trip(lora::Command{2, -1234, std::numeric_limits<int16_t>::min()});
@@ -96,17 +99,13 @@ TEST_CASE("lora messages round-trip", "[codec]") {
         CHECK(out.lin_vel == -1234);
         CHECK(out.ang_vel == std::numeric_limits<int16_t>::min());
     }
-    SECTION("Status with NaN fields") {
-        const float nan = std::numeric_limits<float>::quiet_NaN();
-        const auto out = round_trip(lora::Status{4, 2, 1, 0, 0xBEEF, nan, -120.5f, nan});
-        CHECK(out.tx_id == 4);
-        CHECK(out.mode == 2);
-        CHECK(out.armed == 1);
-        CHECK(out.gate_state == 0);
-        CHECK(out.fault_flags == 0xBEEF);
-        CHECK(std::isnan(out.heading_deg));
-        CHECK(out.gs_rssi == -120.5f);
-        CHECK(std::isnan(out.gs_snr));
+    SECTION("Heartbeat") {
+        wirelink::Frame f{};
+        REQUIRE(codec::pack(lora::Heartbeat{}, f));
+        CHECK(f.type == 3);
+        CHECK(f.len == 0);
+        lora::Heartbeat h{};
+        CHECK(codec::unpack(f, h));
     }
     SECTION("Reenable") {
         CHECK(round_trip(lora::Reenable{7}).rx_id == 7);
@@ -142,29 +141,34 @@ TEST_CASE("base-local messages round-trip", "[codec]") {
 }
 
 TEST_CASE("wire sizes", "[codec]") {
-    CHECK(codec::wire_size(lora::Disable{}) == 1);
-    CHECK(codec::wire_size(lora::SelfStatus{}) == 17);
-    CHECK(codec::wire_size(lora::Command{}) == 5);
-    CHECK(codec::wire_size(lora::Status{}) == 18);
-    CHECK(codec::wire_size(lora::Reenable{}) == 1);
-    CHECK(codec::wire_size(lora::SetMode{}) == 3);
-    CHECK(codec::wire_size(base::RxInfo{}) == 8);
-    CHECK(codec::wire_size(base::BaseStatus{}) == 16);
-    CHECK(codec::wire_size(base::BasePosition{}) == 10);
+    CHECK(wire_size(lora::Disable{}) == 1);
+    CHECK(wire_size(lora::SelfStatus{}) == 31);
+    CHECK(wire_size(lora::Command{}) == 5);
+    CHECK(wire_size(lora::Heartbeat{}) == 0);
+    CHECK(wire_size(lora::Reenable{}) == 1);
+    CHECK(wire_size(lora::SetMode{}) == 3);
+    CHECK(wire_size(base::RxInfo{}) == 8);
+    CHECK(wire_size(base::BaseStatus{}) == 16);
+    CHECK(wire_size(base::BasePosition{}) == 10);
 
     // The whole frame (type, seq, len, payload, crc) must fit a LoRa packet.
-    for (size_t n : {codec::wire_size(lora::Disable{}), codec::wire_size(lora::SelfStatus{}),
-                     codec::wire_size(lora::Command{}), codec::wire_size(lora::Status{}),
-                     codec::wire_size(lora::Reenable{}), codec::wire_size(lora::SetMode{})}) {
-        CHECK(n > 0);
+    for (size_t n : {wire_size(lora::Disable{}), wire_size(lora::SelfStatus{}), wire_size(lora::Command{}),
+                     wire_size(lora::Heartbeat{}), wire_size(lora::Reenable{}), wire_size(lora::SetMode{})}) {
         CHECK(n + 5 <= lora::MAX_LORA_PAYLOAD);
     }
 }
 
 TEST_CASE("fields are little-endian two's complement", "[codec]") {
     CHECK(encode(lora::Command{0x11, -2, 0x0102}) == std::vector<uint8_t>{0x11, 0xFE, 0xFF, 0x02, 0x01});
-    const auto st = encode(lora::SelfStatus{PeerEntry{1, -1, 2, 0.0f, 0}});
-    CHECK(std::vector<uint8_t>(st.begin() + 1, st.begin() + 5) == std::vector<uint8_t>{0xFF, 0xFF, 0xFF, 0xFF});
+    lora::SelfStatus s{};
+    s.self = PeerEntry{1, -1, 2, 0.0f, 0};
+    s.state = 0x25;
+    s.faults = 0x81;
+    const auto b = encode(s);
+    CHECK(std::vector<uint8_t>(b.begin() + 1, b.begin() + 5) == std::vector<uint8_t>{0xFF, 0xFF, 0xFF, 0xFF});
+    // self (17 bytes), heading (4), then state and faults.
+    CHECK(b[21] == 0x25);
+    CHECK(b[22] == 0x81);
 }
 
 TEST_CASE("unpack rejects mismatched frames", "[codec]") {
@@ -190,65 +194,18 @@ TEST_CASE("unpack rejects mismatched frames", "[codec]") {
         lora::Command c{};
         CHECK_FALSE(codec::unpack(f, c));
     }
-}
-
-TEST_CASE("List count above capacity is rejected", "[codec]") {
-    ser::PeerTable table{};
-    table.peer_entries.count = ser::MAX_PEER + 1;
-    wirelink::Frame f{};
-    CHECK_FALSE(codec::pack(table, f));
-
-    // A received frame claiming too many entries must not decode.
-    wirelink::Frame bad{};
-    bad.type = static_cast<uint8_t>(ser::PeerTable::TYPE);
-    bad.len = 1 + 17 * (ser::MAX_PEER + 1);
-    bad.payload.data[0] = ser::MAX_PEER + 1;
-    ser::PeerTable out{};
-    CHECK_FALSE(codec::unpack(bad, out));
-    CHECK(out.peer_entries.count == 0);
-}
-
-TEST_CASE("byte-compatible with upstream wirelink::codec", "[codec]") {
-    const float nan = std::numeric_limits<float>::quiet_NaN();
-
-    check_upstream_compat(ser::Attitude{0.1f, -0.2f, 0.3f, 0.9f, -1.5f, 2.5f, nan, 0.0f, -9.81f, 1e-3f, 0x3F});
-    check_upstream_compat(ser::GPS{-337123456, 1512345678, 0x0123456789ABCDEFull, 4, 11, 0.8f, 1.25f, 359.5f});
-
-    ser::PeerTable table{};
-    SECTION("empty peer table") { check_upstream_compat(table); }
-    SECTION("full peer table") {
-        for (uint8_t i = 0; i < ser::MAX_PEER; ++i) table.peer_entries.items[i] = peer(i);
-        table.peer_entries.count = ser::MAX_PEER;
-        check_upstream_compat(table);
+    SECTION("Heartbeat with a payload") {
+        wirelink::Frame h{};
+        REQUIRE(codec::pack(lora::Heartbeat{}, h));
+        h.len = 1;
+        lora::Heartbeat out{};
+        CHECK_FALSE(codec::unpack(h, out));
     }
-    SECTION("partial peer table") {
-        table.peer_entries.items[0] = peer(1);
-        table.peer_entries.items[1] = peer(2);
-        table.peer_entries.items[2] = peer(9);
-        table.peer_entries.count = 3;
-        check_upstream_compat(table);
-    }
-
-    check_upstream_compat(ser::OwnScalar{-42.125f});
-
-    ser::Status status{};
-    status.boat_id = 5;
-    status.gate_state = 1;
-    status.fault_flags = 0x8001;
-    status.links.items[0] = link(1);
-    status.links.items[1] = link(2);
-    status.links.count = 2;
-    check_upstream_compat(status);
-
-    check_upstream_compat(ser::MotorCommand{1100, 1900});
-    check_upstream_compat(ser::BroadcastPayload{-1, -2147483647 - 1, nan});
-    check_upstream_compat(ser::Config{3, 2, 9, 125000, 915000000, 1000, 1500, 2000, 1});
-    check_upstream_compat(ser::Heartbeat{2});
 }
 
 TEST_CASE("pack -> wrap -> unwrap -> unpack", "[codec]") {
     wirelink::Frame f{};
-    REQUIRE(codec::pack(lora::Status{9, 1, 1, 2, 0x0100, 271.5f, -80.0f, 9.5f}, f));
+    REQUIRE(codec::pack(self_status(9), f));
     const auto packet = wirelink::framing::wrap(f, 200);
     REQUIRE(packet);
     // Only the two delimiters may be zero.
@@ -260,13 +217,45 @@ TEST_CASE("pack -> wrap -> unwrap -> unpack", "[codec]") {
     REQUIRE(back);
     CHECK(back->seq == 200);
     CHECK(back->type == f.type);
-    lora::Status s{};
+    lora::SelfStatus s{};
     REQUIRE(codec::unpack(*back, s));
-    CHECK(s.tx_id == 9);
-    CHECK(s.fault_flags == 0x0100);
+    CHECK(s.self.id == 9);
+    CHECK(s.faults == boat::mode::fault::GPS_FAILURE);
     CHECK(s.heading_deg == 271.5f);
     CHECK(s.gs_rssi == -80.0f);
     CHECK(s.gs_snr == 9.5f);
+}
+
+// ---------------------------------------------------------------------------
+// state.h: SelfStatus::state is mode (bits 0-3) | armed (4) | gate (5).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("state: encode / decode the SelfStatus state byte", "[codec][state]") {
+    using namespace boat::mode;
+    CHECK(state::encode(Mode::MANUAL, ArmedState::DISARMED, GateState::TRIPPED) == 0x00);
+    CHECK(state::encode(Mode::MANUAL, ArmedState::ARMED, GateState::ENABLED) == 0x30);
+    CHECK(state::encode(Mode::EMERGENCY_STOP, ArmedState::DISARMED, GateState::ENABLED) == 0x23);
+    CHECK(state::encode(Mode::RETURN_TO_HOME, ArmedState::ARMED, GateState::TRIPPED) == 0x12);
+    CHECK(state::encode(uint8_t{0x1F}, ArmedState::DISARMED, GateState::TRIPPED) == 0x0F);  // 4 bits only
+
+    const state::State a = state::decode(0x31);
+    CHECK(a.mode == static_cast<uint8_t>(Mode::AUTONOMOUS));
+    CHECK(a.armed == static_cast<uint8_t>(ArmedState::ARMED));
+    CHECK(a.gate == static_cast<uint8_t>(GateState::ENABLED));
+    CHECK(a.reserved == 0);
+    CHECK(a.is_armed());
+    CHECK_FALSE(a.is_tripped());
+
+    const state::State b = state::decode(0xC9);  // reserved bits, unknown mode 9, disarmed, tripped
+    CHECK(b.mode == 9);
+    CHECK_FALSE(b.is_armed());
+    CHECK(b.is_tripped());
+    CHECK(b.reserved == 0xC0);
+
+    for (int raw = 0; raw < 0x40; ++raw) {
+        const state::State s = state::decode(static_cast<uint8_t>(raw));
+        CHECK(state::encode(s.mode, static_cast<ArmedState>(s.armed), static_cast<GateState>(s.gate)) == raw);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -294,5 +283,7 @@ TEST_CASE("names: fault lists", "[codec][names]") {
     namespace fault = boat::mode::fault;
     CHECK(basestation::names::fault_list(0).empty());
     CHECK(basestation::names::fault_list(fault::GPS_FAILURE | fault::BATTERY_LOW) == "GPS_FAILURE, BATTERY_LOW");
+    // LoRa SelfStatus faults are uint8, the serial link's Status faults uint16.
+    CHECK(basestation::names::fault_list(uint8_t{fault::MOTOR_FAILURE | 0x80}) == "MOTOR_FAILURE, BIT7");
     CHECK(basestation::names::fault_list(1u << 15) == "BIT15");
 }

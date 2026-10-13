@@ -5,8 +5,9 @@
 // Modes are plain uint8 values on the wire, so a boat running newer firmware
 // may report a mode this table does not know yet. Every lookup therefore
 // takes the raw value and falls back to "MODE <n>" instead of failing, and
-// the UI can send any raw value (see SetMode). To add a mode: add it to
-// boat_defs/mode.h upstream, then add one line to MODES below.
+// the UI can send any raw value (see SetMode; SelfStatus::state has room for
+// modes 0-15, see state.h). To add a mode: add it to boat_defs/mode.h
+// upstream, then add one line to MODES below.
 
 #include <boat_defs/mode.h>
 
@@ -57,7 +58,7 @@ inline std::string gate_name(uint8_t raw) {
 }
 
 struct FaultInfo {
-    uint16_t bit;
+    uint8_t bit;
     const char* name;
 };
 
@@ -69,7 +70,9 @@ inline constexpr FaultInfo FAULTS[] = {
     {boat::mode::fault::SENSOR_FAILURE, "SENSOR_FAILURE"},
 };
 
-// Names of the set bits; unknown bits appear as "BIT<n>".
+// Names of the set bits; unknown bits appear as "BIT<n>". Takes the uint8
+// LoRa SelfStatus::faults as well as the serial link's 16-bit
+// Status::fault_flags.
 inline std::vector<std::string> fault_names(uint16_t flags) {
     std::vector<std::string> out;
     for (int bit = 0; bit < 16; ++bit) {

@@ -6,10 +6,15 @@
 #include <basestation/core/commander.h>
 #include <basestation/core/fleet_model.h>
 #include <basestation/core/link_session.h>
+#include <basestation/core/serial_port.h>
+#include <basestation/proto/state.h>
 
 #include <boat_defs/ids.h>
 #include <boat_defs/mode.h>
 #include <boat_defs/units.h>
+
+#include <wirelink/framing.h>
+#include <wirelink/wire.h>
 
 #include <algorithm>
 #include <chrono>
@@ -121,9 +126,19 @@ double distance(Pos a, Pos b) { return std::hypot(a.n - b.n, a.e - b.e); }
 bool all_gates(const FleetModel& fleet, GateState g) {
     if (fleet.boats().size() != 3) return false;
     for (const auto& [id, b] : fleet.boats()) {
-        if (!b.status || b.status->gate_state != static_cast<uint8_t>(g)) return false;
+        if (!b.self_status || b.state.gate != static_cast<uint8_t>(g)) return false;
     }
     return true;
+}
+
+// Reads simulator stdout until a line starting with "TX " (a land frame the
+// base station transmitted), or gives up.
+std::string next_tx_line(SimProcess& sim) {
+    std::string line;
+    while (sim.read_line(line, 2000ms)) {
+        if (line.rfind("TX ", 0) == 0) return line;
+    }
+    return "";
 }
 
 #endif
@@ -147,12 +162,13 @@ TEST_CASE("simulator drives LinkSession, FleetModel and Commander end to end", "
     REQUIRE(link.open(port, 115200, &error));
     FleetModel fleet;
 
-    // Phase 1: every boat reports SelfStatus + Status with RxInfo attached,
-    // and the base station reports its own status.
+    // Phase 1: every boat reports SelfStatus with RxInfo attached, and has
+    // heard the base station's land slot (Heartbeats while the PC is
+    // silent); the base station reports its own status.
     const bool fleet_up = pump_until(link, fleet, 1500ms, [&] {
         if (fleet.boats().size() != 3 || !fleet.base_station().status) return false;
         for (const auto& [id, b] : fleet.boats()) {
-            if (!b.self_status || !b.status || !b.rx_info) return false;
+            if (!b.self_status || !b.rx_info || !std::isfinite(b.self_status->gs_rssi)) return false;
         }
         return true;
     });
@@ -161,18 +177,41 @@ TEST_CASE("simulator drives LinkSession, FleetModel and Commander end to end", "
         INFO("boat " << int(id));
         REQUIRE(fleet.boats().count(id) == 1);
         const BoatState& b = fleet.boats().at(id);
-        CHECK(b.self_status.has_value());
-        CHECK(b.status.has_value());
         CHECK(b.rx_info.has_value());
-        if (b.status) {
-            CHECK(b.status->mode == static_cast<uint8_t>(Mode::MANUAL));
-            CHECK(b.status->armed == static_cast<uint8_t>(ArmedState::DISARMED));
-            CHECK(b.status->gate_state == static_cast<uint8_t>(GateState::ENABLED));
-        }
+        REQUIRE(b.self_status.has_value());
+        CHECK(b.state.mode == static_cast<uint8_t>(Mode::MANUAL));
+        CHECK_FALSE(b.state.is_armed());
+        CHECK_FALSE(b.state.is_tripped());
+        CHECK(b.state.reserved == 0);
+        CHECK(b.self_status->faults == 0);
+        CHECK(std::isfinite(b.self_status->heading_deg));
+        CHECK(std::isfinite(b.self_status->gs_rssi));
+        CHECK(std::isfinite(b.self_status->gs_snr));
     }
     CHECK(fleet.base_station().status.has_value());
     CHECK(fleet.counters().decode_errors == 0);
     REQUIRE(fleet_up);
+
+    // TDMA: one SelfStatus per boat and one land frame per 100 ms cycle.
+    // BaseStatus (1 Hz) counts the land frames; the PC sends nothing yet, so
+    // they are the base station's own Heartbeats.
+    {
+        const base::BaseStatus first = *fleet.base_station().status;
+        const uint64_t self1 = fleet.boats().at(1).total_seq().received;
+        // Two BaseStatus later (~2 s; their timing jitters by a few ms).
+        REQUIRE(pump_until(link, fleet, 3000ms, [&] {
+            return fleet.base_station().status->uptime_ms >= first.uptime_ms + 1500;
+        }));
+        const base::BaseStatus last = *fleet.base_station().status;
+        const double secs = (last.uptime_ms - first.uptime_ms) / 1000.0;
+        const double land_hz = (last.tx_count - first.tx_count) / secs;
+        const double self_hz = static_cast<double>(fleet.boats().at(1).total_seq().received - self1) / secs;
+        INFO("land frames " << land_hz << " Hz, boat 1 SelfStatus " << self_hz << " Hz over " << secs << " s");
+        CHECK(land_hz > 8.0);
+        CHECK(land_hz < 12.0);
+        CHECK(self_hz > 7.0);
+        CHECK(self_hz < 13.0);
+    }
 
     // Phase 2: arm boat 2 and drive it forward; boat 1 only drifts.
     Commander commander(link);
@@ -183,14 +222,14 @@ TEST_CASE("simulator drives LinkSession, FleetModel and Commander end to end", "
     pump_until(link, fleet, 1000ms, [] { return false; }, [&] {
         if (Clock::now() < drive_end) link.send_msg(lora::Command{2, 1000, 0});
     });
-    // Let the next SelfStatus (3 Hz) report the final position.
-    pump_until(link, fleet, 400ms, [] { return false; });
+    // Let the next SelfStatus (every 100 ms cycle) report the final position.
+    pump_until(link, fleet, 300ms, [] { return false; });
     const double moved1 = distance(start1, position(fleet.boats().at(1)));
     const double moved2 = distance(start2, position(fleet.boats().at(2)));
     INFO("boat 1 moved " << moved1 << " m, boat 2 moved " << moved2 << " m");
     CHECK(moved2 > 0.4);
     CHECK(moved2 > moved1 + 0.3);
-    CHECK(fleet.boats().at(2).status->armed == static_cast<uint8_t>(ArmedState::ARMED));
+    CHECK(fleet.boats().at(2).state.is_armed());
 
     // Phase 3: Disable ALL trips every gate; Reenable ALL clears them.
     const auto disabled_at = Clock::now();
@@ -206,8 +245,56 @@ TEST_CASE("simulator drives LinkSession, FleetModel and Commander end to end", "
     REQUIRE(commander.reenable(boat::ids::BROADCAST_ID));
     CHECK(pump_until(link, fleet, 1000ms, [&] { return all_gates(fleet, GateState::ENABLED); }));
 
+    // Nothing lost (loss 0), and the base station never echoes land frames.
+    for (const auto& [id, b] : fleet.boats()) CHECK(b.total_seq().lost == 0);
+    CHECK(fleet.counters().land_frames == 0);
     CHECK(link.stats().rx_bad == 0);
     link.close();
+#endif
+}
+
+TEST_CASE("simulator land slot: one frame per cycle, by priority", "[sim]") {
+#ifndef ASEP_FAKE_BASE_PATH
+    SKIP("asep_fake_base not built");
+#else
+    // Not --quiet: the simulator prints each land frame it transmits.
+    SimProcess sim({"--seed", "3", "--loss", "0", "--corrupt", "0"});
+    REQUIRE(sim.running());
+    std::string line;
+    REQUIRE(sim.read_line(line, 2000ms));
+    REQUIRE(line.rfind("PORT ", 0) == 0);
+    SerialPort port;
+    std::string error;
+    REQUIRE(port.open(line.substr(5), 115200, &error));
+
+    // Lowest priority first, in ONE write so the simulator queues all four
+    // before its next land slot.
+    std::vector<uint8_t> burst;
+    auto add = [&](const auto& msg, uint8_t seq) {
+        wirelink::Frame f{};
+        REQUIRE(wirelink::codec::pack(msg, f));
+        const auto pkt = wirelink::framing::wrap(f, seq);
+        REQUIRE(pkt);
+        burst.insert(burst.end(), pkt->data.begin(), pkt->data.begin() + static_cast<long>(pkt->len));
+    };
+    add(lora::Command{1, 100, 0}, 0);
+    add(lora::Command{1, 200, 0}, 1);
+    add(lora::SetMode{2, static_cast<uint8_t>(Mode::MANUAL), 1}, 0);
+    add(lora::Disable{3}, 0);
+    REQUIRE(port.write_all(burst.data(), burst.size(), 1000, &error));
+
+    const std::string first = next_tx_line(sim);
+    const std::string second = next_tx_line(sim);
+    const std::string third = next_tx_line(sim);
+    INFO(first << "\n" << second << "\n" << third);
+    CHECK(first.rfind("TX Disable rx=3 seq=0 heard=3", 0) == 0);
+    CHECK(second.rfind("TX SetMode rx=2 mode=MANUAL armed=ARMED seq=0 heard=2", 0) == 0);
+    // Only the latest Command goes out.
+    CHECK(third.rfind("TX Command rx=1 lin=200mm/s ang=0mrad/s seq=1 heard=1", 0) == 0);
+    // Then the base station is idle again: Heartbeats only (not printed).
+    std::string more;
+    CHECK_FALSE(sim.read_line(more, 400ms));
+    port.close();
 #endif
 }
 

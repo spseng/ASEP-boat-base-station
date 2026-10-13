@@ -127,15 +127,15 @@ void App::draw_teleop() {
 
     // ---- will the boat listen? ----
     auto check_boat = [&](const BoatState& b, std::string& why) {
-        if (!b.status) {
-            why = "no Status received yet";
+        if (!b.self_status) {
+            why = "no SelfStatus received yet";
             return;
         }
-        const auto& s = *b.status;
+        const state::State& s = b.state;
         std::string w;
         if (s.mode != static_cast<uint8_t>(boat::mode::Mode::MANUAL)) w += names::mode_name(s.mode) + " (needs MANUAL)";
-        if (s.armed != static_cast<uint8_t>(boat::mode::ArmedState::ARMED)) w += (w.empty() ? "" : ", ") + names::armed_name(s.armed);
-        if (s.gate_state == static_cast<uint8_t>(boat::mode::GateState::TRIPPED)) w += (w.empty() ? "" : ", ") + std::string("gate TRIPPED");
+        if (!s.is_armed()) w += (w.empty() ? "" : ", ") + names::armed_name(s.armed);
+        if (s.is_tripped()) w += (w.empty() ? "" : ", ") + std::string("gate TRIPPED");
         why = w;
     };
     if (teleop_target_ != 0) {
