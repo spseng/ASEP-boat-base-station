@@ -1,7 +1,7 @@
 #include <basestation/core/commander.h>
 
 #include <basestation/proto/names.h>
-#include <basestation/proto/state.h>
+#include <basestation/proto/msgs.h>
 
 #include <boat_defs/ids.h>
 

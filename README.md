@@ -269,7 +269,7 @@ lost packets per boat and per message type from them.
 | 3 | `Heartbeat {}` | land → all, when the land slot has nothing else | 〃 |
 | 4 | `Reenable {rx_id}` | land → boat | 〃 |
 | 5 | `SetMode {rx_id, mode, armed}` | land → boat | 〃 |
-| 0x80 | `RxInfo {rssi, snr}` | base ESP32 → PC | `src/proto/basestation/proto/base.h` |
+| 0x80 | `RxInfo {rssi, snr}` | base ESP32 → PC | upstream `wirelink/msg/base.h` |
 | 0x81 | `BaseStatus {uptime, rx_ok, rx_bad, tx_count}` | base ESP32 → PC | 〃 |
 | 0x82 | `BasePosition {lat, lon (1e-7 deg), fix_quality, satellites}` | base ESP32 → PC (optional GPS) | 〃 |
 
@@ -278,14 +278,16 @@ lost packets per boat and per message type from them.
 Everything a boat reports is in its **SelfStatus**: position and scalar
 (`self`), `heading_deg` (degrees true, NaN = no compass, then the app shows
 course over ground), `state` (bits 0-3 mode, bit 4 armed, bit 5 gate
-enabled, bits 6-7 reserved; decoded in `src/proto/basestation/proto/state.h`),
+enabled, bits 6-7 reserved; read with upstream `lora::get_mode` / `get_armed` / `get_gate`, written with `make_state`),
 `faults` (`boat::mode::fault` bits) and `gs_rssi` / `gs_snr`: how well the
 boat hears the land station, NaN until it has heard one land frame. The
 app's "Boat hears" column shows `-` then.
 
 The LoRa messages, the codec (`wirelink::codec::pack` / `unpack`) and the
-radio settings (`boat_defs/lora.h`) come from upstream ASEP-boat; this
-repository adds only the base-local 0x80+ messages. What is still open
+radio settings (`boat_defs/lora.h`) and the base-local 0x80+ messages
+(`wirelink/msg/base.h`) all come from upstream ASEP-boat; this repository
+defines no messages of its own (`src/proto/basestation/proto/msgs.h` only
+adds short aliases). What is still open
 upstream is listed in **[WIRELINK_CHANGES.md](WIRELINK_CHANGES.md)**.
 
 ### Radio and TDMA
@@ -314,7 +316,7 @@ and one for the land station.
 ## Project layout
 
 ```
-src/proto/   base-local messages, SelfStatus state byte, display names
+src/proto/   aliases for the upstream messages (msgs.h), display names
              (header-only; LoRa messages and codec are upstream's)
 src/core/    everything that is not GUI: serial port, frame splitting,
              link session, session log, fleet model, teleop, commands,

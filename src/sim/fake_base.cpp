@@ -17,9 +17,8 @@
 
 #include "sim_world.h"
 
-#include <basestation/proto/base.h>
+#include <basestation/proto/msgs.h>
 #include <basestation/proto/names.h>
-#include <basestation/proto/state.h>
 
 #include <boat_defs/ids.h>
 #include <boat_defs/mode.h>

@@ -3,7 +3,7 @@
 
 #include <basestation/core/fleet_model.h>
 #include <basestation/core/geo.h>
-#include <basestation/proto/state.h>
+#include <basestation/proto/msgs.h>
 
 #include <boat_defs/mode.h>
 #include <boat_defs/units.h>

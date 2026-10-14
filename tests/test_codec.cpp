@@ -1,9 +1,8 @@
 // The protocol layer on upstream wirelink::codec: every message the base
 // station sends or receives (wirelink::msg::lora + basestation::base) must
-// round-trip and have the expected wire size; plus state.h and names.h.
+// round-trip and have the expected wire size; plus msgs.h (state byte) and names.h.
 
-#include <basestation/proto/base.h>
-#include <basestation/proto/state.h>
+#include <basestation/proto/msgs.h>
 
 #include <wirelink/msg/lora.h>
 #include <wirelink/wire.h>
@@ -227,7 +226,7 @@ TEST_CASE("pack -> wrap -> unwrap -> unpack", "[codec]") {
 }
 
 // ---------------------------------------------------------------------------
-// state.h: SelfStatus::state is mode (bits 0-3) | armed (4) | gate (5).
+// msgs.h: SelfStatus::state is mode (bits 0-3) | armed (4) | gate (5).
 // ---------------------------------------------------------------------------
 
 TEST_CASE("state: encode / decode the SelfStatus state byte", "[codec][state]") {

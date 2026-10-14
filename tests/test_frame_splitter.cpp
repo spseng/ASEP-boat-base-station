@@ -1,5 +1,5 @@
 #include <basestation/core/frame_splitter.h>
-#include <basestation/proto/state.h>
+#include <basestation/proto/msgs.h>
 
 #include <wirelink/wire.h>
 

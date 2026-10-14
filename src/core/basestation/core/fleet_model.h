@@ -6,8 +6,7 @@
 #include <basestation/core/common.h>
 #include <basestation/core/event_log.h>
 #include <basestation/core/geo.h>
-#include <basestation/proto/base.h>
-#include <basestation/proto/state.h>
+#include <basestation/proto/msgs.h>
 
 #include <cmath>
 #include <cstdint>

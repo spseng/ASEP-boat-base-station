@@ -3,7 +3,7 @@
 #include <basestation/core/commander.h>
 #include <basestation/core/frame_splitter.h>
 #include <basestation/core/link_session.h>
-#include <basestation/proto/state.h>
+#include <basestation/proto/msgs.h>
 
 #include <boat_defs/ids.h>
 #include <boat_defs/mode.h>

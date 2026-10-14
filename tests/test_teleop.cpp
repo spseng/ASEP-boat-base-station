@@ -5,7 +5,7 @@
 #include <basestation/core/link_session.h>
 #include <basestation/core/teleop.h>
 #include <basestation/core/teleop_sender.h>
-#include <basestation/proto/state.h>
+#include <basestation/proto/msgs.h>
 
 #include <boat_defs/ids.h>
 

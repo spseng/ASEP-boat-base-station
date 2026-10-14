@@ -1,7 +1,7 @@
 #include <basestation/core/teleop_sender.h>
 
 #include <basestation/core/commander.h>
-#include <basestation/proto/state.h>
+#include <basestation/proto/msgs.h>
 
 #include <boat_defs/units.h>
 

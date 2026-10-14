@@ -7,9 +7,8 @@
 // Values never contain commas, so no CSV quoting is needed.
 
 #include <basestation/core/frame_log.h>
-#include <basestation/proto/base.h>
+#include <basestation/proto/msgs.h>
 #include <basestation/proto/names.h>
-#include <basestation/proto/state.h>
 
 #include <boat_defs/ids.h>
 #include <boat_defs/mode.h>

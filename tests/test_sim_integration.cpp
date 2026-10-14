@@ -7,7 +7,7 @@
 #include <basestation/core/fleet_model.h>
 #include <basestation/core/link_session.h>
 #include <basestation/core/serial_port.h>
-#include <basestation/proto/state.h>
+#include <basestation/proto/msgs.h>
 
 #include <boat_defs/ids.h>
 #include <boat_defs/mode.h>

@@ -5,13 +5,13 @@ This repository never modifies `ASEP-boat` (it is a read-only submodule under
 is listed here for you to apply upstream. Each item says what to change, why,
 and what the base station does in the meantime.
 
-Checked against ASEP-boat `7b59f1e` ("update lora msgs").
+Checked against ASEP-boat `2cf1d1e` ("added utility function for Lora to ease compression").
 
 | § | Item | State |
 |---|---|---|
 | 1 | `wire.h`: `int16_t` and nested structs | **ADOPTED** in `7b59f1e` |
 | 2 | `msg/lora.h`: a meaningful LoRa message set | **ADOPTED** in `7b59f1e` (upstream's own version) |
-| 3 | Reserve frame types `>= 0x80`; what the base ESP32 must do | open |
+| 3 | Base-local messages (`>= 0x80`); what the base ESP32 must do | **ADOPTED** in `2658776` (`wirelink/msg/base.h`); firmware behaviour below still to implement |
 | 4 | Adding modes | information |
 | 5 | Minor items | open |
 
@@ -50,8 +50,8 @@ is deleted. Compared with the proposal, `Status` was folded into
 | 5 | `SetMode {rx_id, mode, armed}` |
 
 `state` packs mode (bits 0-3), armed (bit 4) and gate enabled (bit 5);
-bits 6-7 are reserved. The base station decodes it in
-`src/proto/basestation/proto/state.h`. Encoded sizes are 1 / 31 / 5 / 0 / 1 / 3
+bits 6-7 are reserved. Upstream `get_mode` / `get_armed` / `get_gate` /
+`make_state` (`2cf1d1e`) read and write it; the base station uses them. Encoded sizes are 1 / 31 / 5 / 0 / 1 / 3
 bytes, all well under `MAX_LORA_PAYLOAD = 64`.
 
 Radio plan (agreed): SF6 / 500 kHz (`boat_defs/lora.h`), a 10 Hz cycle of
@@ -82,9 +82,10 @@ Consequences on the boat side (not implemented here):
 
 ---
 
-## 3. Reserve frame types `>= 0x80` for the PC ↔ base-station link
+## 3. Base-local messages (`>= 0x80`): ADOPTED in `2658776`
 
-Defined in `src/proto/basestation/proto/base.h`. These are emitted only by
+Now defined upstream in `wirelink/msg/base.h` (this repository's copy is
+gone; it uses upstream's). These are emitted only by
 the base-station ESP32 on its USB serial link and are never transmitted over
 LoRa:
 
@@ -95,8 +96,8 @@ LoRa:
 | `0x82` | `BasePosition {int32 lat, int32 lon (1e-7 deg), uint8 fix_quality (0 = no fix), uint8 satellites}` | About 1 Hz, only if the base ESP32 has a GPS. A fix overrides the position set by hand in the UI. |
 
 All are optional; the UI still works if the ESP32 never sends them.
-If you agree, add a comment to `lora.h` (or `framing.h`) reserving
-`0x80–0xFF` so a future LoRa type never collides.
+Upstream `base.h` documents the `>= 0x80` rule; a one-line note in `lora.h`
+as well would stop a future LoRa type from being numbered into that range.
 
 **Behaviour the base station expects from `firmware/src/ground`.**
 
@@ -168,7 +169,9 @@ the point to add a dedicated message instead of stretching `SetMode`.
   `codec::pack` sets only `frame.len`, and `framing::wrap` reads only
   `frame.len`. It works, but it's easy to set the wrong one. Consider
   dropping one.
-- **`Heartbeat`'s unused parameter** and the **0x80+ reservation comment**:
+- **`Heartbeat`'s unused parameter** and the **0x80+ note in `lora.h`**:
   see §2 and §3.
+- **`boat_defs/lora.h`: `FREQUENCY = 915.0; // kHz`** should say **MHz**
+  (RadioLib takes the frequency in MHz and the bandwidth in kHz).
 - ~~`wirelink/CMakeLists.txt` listed `src/parser.cpp`~~. Fixed upstream in
   `06bce72`.

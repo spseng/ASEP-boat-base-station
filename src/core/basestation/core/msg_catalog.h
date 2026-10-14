@@ -78,7 +78,7 @@ enum class Kind : uint8_t {
     Mode,    // boat::mode::Mode (unknown = warning: may be newer firmware)
     Armed,   // boat::mode::ArmedState
     Gate,    // boat::mode::GateState
-    State,   // lora::SelfStatus::state: mode | armed | gate (see proto/state.h)
+    State,   // lora::SelfStatus::state: mode | armed | gate (see proto/msgs.h)
     Faults,  // boat::mode::fault bits (undefined bits = warning)
     List,    // wirelink::List: this entry, then the element's leaves
 };

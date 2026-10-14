@@ -6,7 +6,7 @@
 // may report a mode this table does not know yet. Every lookup therefore
 // takes the raw value and falls back to "MODE <n>" instead of failing, and
 // the UI can send any raw value (see SetMode; SelfStatus::state has room for
-// modes 0-15, see state.h). To add a mode: add it to boat_defs/mode.h
+// modes 0-15, see msgs.h). To add a mode: add it to boat_defs/mode.h
 // upstream, then add one line to MODES below.
 
 #include <boat_defs/mode.h>

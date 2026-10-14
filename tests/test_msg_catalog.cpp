@@ -1,6 +1,5 @@
 #include <basestation/core/msg_catalog.h>
-#include <basestation/proto/base.h>
-#include <basestation/proto/state.h>
+#include <basestation/proto/msgs.h>
 
 #include <boat_defs/mode.h>
 
