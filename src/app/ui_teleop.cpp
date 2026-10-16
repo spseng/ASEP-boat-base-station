@@ -127,15 +127,15 @@ void App::draw_teleop() {
 
     // ---- will the boat listen? ----
     auto check_boat = [&](const BoatState& b, std::string& why) {
-        if (!b.status) {
-            why = "no Status received yet";
+        if (!b.self_status) {
+            why = "no SelfStatus received yet";
             return;
         }
-        const auto& s = *b.status;
+        const state::State& s = b.state;
         std::string w;
         if (s.mode != static_cast<uint8_t>(boat::mode::Mode::MANUAL)) w += names::mode_name(s.mode) + " (needs MANUAL)";
-        if (s.armed != static_cast<uint8_t>(boat::mode::ArmedState::ARMED)) w += (w.empty() ? "" : ", ") + names::armed_name(s.armed);
-        if (s.gate_state == static_cast<uint8_t>(boat::mode::GateState::TRIPPED)) w += (w.empty() ? "" : ", ") + std::string("gate TRIPPED");
+        if (!s.is_armed()) w += (w.empty() ? "" : ", ") + names::armed_name(s.armed);
+        if (s.is_tripped()) w += (w.empty() ? "" : ", ") + std::string("gate TRIPPED");
         why = w;
     };
     if (teleop_target_ != 0) {
@@ -272,21 +272,21 @@ void App::draw_teleop_config() {
     help_marker("Pressing it sends DISABLE to the teleop target, whether or not teleop is on");
 
     ImGui::SeparatorText("Timing");
-    changed |= ImGui::SliderFloat("Send rate", &c.rate_hz, 1.0f, 30.0f, "%.0f Hz");
+    changed |= ImGui::SliderFloat("Refresh rate", &c.rate_hz, 1.0f, 30.0f, "%.0f Hz");
+    help_marker("How often the base station's Command is replaced with the newest stick input. "
+                "At most one Command goes on air per TDMA cycle; a higher rate makes it fresher.");
     changed |= ImGui::SliderInt("Input stale after", &c.input_stale_ms, 50, 2000, "%d ms");
-    changed |= ImGui::SliderInt("Stop burst", &c.stop_burst, 0, 10, "%d cmds");
-    help_marker("Zero commands sent to the old target when teleop is switched off or the target changes");
+    changed |= ImGui::SliderInt("Stop", &c.stop_burst, 0, 10, "%d cycles");
+    help_marker("TDMA cycles of zero commands to the old target when teleop is switched off or the target changes");
 
     ImGui::SeparatorText("Disable command");
-    bool cmd_changed = ImGui::SliderInt("Disable repeats", &settings_.disable_repeats, 1, 10);
-    cmd_changed |= ImGui::SliderInt("Repeat interval", &settings_.repeat_interval_ms, 20, 1000, "%d ms");
-    if (cmd_changed) apply_commander_config();
+    if (ImGui::SliderInt("Disable repeats", &settings_.disable_repeats, 1, 10, "%d slots")) apply_commander_config();
+    help_marker("Land slots (one per TDMA cycle) that carry each DISABLE");
     ImGui::PopItemWidth();
 
     if (ImGui::Button("Reset to defaults")) {
         c = TeleopConfig{};
         settings_.disable_repeats = 3;
-        settings_.repeat_interval_ms = 100;
         apply_commander_config();
         changed = true;
     }

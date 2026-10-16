@@ -1,13 +1,15 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <basestation/core/commander.h>
+#include <basestation/core/uplink.h>
 #include <basestation/core/frame_splitter.h>
 #include <basestation/core/link_session.h>
-#include <basestation/proto/codec.h>
-#include <basestation/proto/lora.h>
+#include <basestation/proto/msgs.h>
 
 #include <boat_defs/ids.h>
 #include <boat_defs/mode.h>
+
+#include <wirelink/wire.h>
 
 #include "pty_peer.h"
 
@@ -29,6 +31,31 @@ size_t count_events(const EventLog& log, EventLevel level, const std::string& te
     return n;
 }
 
+// Echoes come from the test (Uplink::on_frame), never from a timeout.
+Uplink::Config no_timeouts() {
+    Uplink::Config c;
+    c.echo_timeout = 60s;
+    c.max_age = 60s;
+    return c;
+}
+
+// The ESP32 transmitted `f` in its land slot.
+void echo(Uplink& up, const wirelink::Frame& f) { up.on_frame(RxFrame{Clock::now(), f}); }
+
+template <class T>
+bool is(const wirelink::Frame& f, uint8_t rx_id) {
+    T m{};
+    return f.type == static_cast<uint8_t>(T::TYPE) && wirelink::codec::unpack(f, m) && m.rx_id == rx_id;
+}
+
+// Exactly one frame handed over.
+wirelink::Frame one(PtyPeer& pty) {
+    const auto rx = pty.read(1, 1000ms);
+    REQUIRE(rx.size() == 1);
+    REQUIRE(pty.read_for(30ms).empty());
+    return rx[0].frame;
+}
+
 }  // namespace
 
 TEST_CASE("Commander: target_name", "[model][commander]") {
@@ -36,33 +63,25 @@ TEST_CASE("Commander: target_name", "[model][commander]") {
     CHECK(Commander::target_name(boat::ids::BROADCAST_ID) == "ALL");
 }
 
-TEST_CASE("Commander: disable is sent at once and repeated", "[model][commander][pty]") {
+TEST_CASE("Commander: disable goes out in disable_repeats land slots", "[model][commander][pty]") {
     PtyPeer pty;
     LinkSession link;
     open_link(link, pty);
+    Uplink up(link);
+    up.set_config(no_timeouts());
     EventLog log;
-    Commander cmd(link, &log);
-    cmd.set_config(Commander::Config{3, 60ms});
+    Commander cmd(up, &log);
+    cmd.set_config(Commander::Config{3});
     CHECK(cmd.config().disable_repeats == 3);
 
-    const auto t0 = Clock::now();
     REQUIRE(cmd.disable(3));
-    const auto rx = pty.read(3, 2000ms);
-    REQUIRE(rx.size() == 3);
-    CHECK(pty.read_for(90ms).empty());  // exactly disable_repeats copies
-    for (size_t i = 0; i < rx.size(); ++i) {
-        lora::Disable d{};
-        REQUIRE(codec::unpack(rx[i].frame, d));
-        CHECK(d.rx_id == 3);
-        CHECK(rx[i].frame.seq == i);  // LinkSession numbers each copy
+    for (int copy = 0; copy < 3; ++copy) {
+        const wirelink::Frame f = one(pty);
+        CHECK(is<lora::Disable>(f, 3));
+        echo(up, f);
     }
-    // Repeat k cannot be sent before t0 + k * repeat_interval, and a frame
-    // cannot be read before it was sent, so these bounds hold however late
-    // the reading side wakes up (arrival gaps between frames do not: a late
-    // reader sees two frames at once).
-    CHECK(rx[1].t - t0 >= 60ms);
-    CHECK(rx[2].t - t0 >= 120ms);
-    CHECK(rx[2].t - t0 < 1500ms);
+    CHECK(pty.read_for(30ms).empty());
+    CHECK(up.status().queued == 0);
     CHECK(count_events(log, EventLevel::Warn, "Sent DISABLE to boat 3") == 1);
 }
 
@@ -70,122 +89,111 @@ TEST_CASE("Commander: disable to ALL", "[model][commander][pty]") {
     PtyPeer pty;
     LinkSession link;
     open_link(link, pty);
+    Uplink up(link);
+    up.set_config(no_timeouts());
     EventLog log;
-    Commander cmd(link, &log);
-    cmd.set_config(Commander::Config{1, 10ms});
+    Commander cmd(up, &log);
+    cmd.set_config(Commander::Config{1});
     REQUIRE(cmd.disable(boat::ids::BROADCAST_ID));
-    const auto rx = pty.read_for(60ms);
-    REQUIRE(rx.size() == 1);
-    lora::Disable d{};
-    REQUIRE(codec::unpack(rx[0].frame, d));
-    CHECK(d.rx_id == boat::ids::BROADCAST_ID);
+    const wirelink::Frame f = one(pty);
+    CHECK(is<lora::Disable>(f, boat::ids::BROADCAST_ID));
+    echo(up, f);
+    CHECK(pty.read_for(30ms).empty());
     CHECK(count_events(log, EventLevel::Warn, "Sent DISABLE to ALL") == 1);
 }
 
-TEST_CASE("Commander: reenable and set_mode are sent once", "[model][commander][pty]") {
+TEST_CASE("Commander: reenable and set_mode go out once, in order", "[model][commander][pty]") {
     PtyPeer pty;
     LinkSession link;
     open_link(link, pty);
+    Uplink up(link);
+    up.set_config(no_timeouts());
     EventLog log;
-    Commander cmd(link, &log);
+    Commander cmd(up, &log);
 
     REQUIRE(cmd.reenable(2));
-    auto rx = pty.read(1, 200ms);
-    REQUIRE(rx.size() == 1);
-    lora::Reenable r{};
-    REQUIRE(codec::unpack(rx[0].frame, r));
-    CHECK(r.rx_id == 2);
+    REQUIRE(cmd.set_mode(1, boat::mode::Mode::AUTONOMOUS, boat::mode::ArmedState::ARMED));
+    const wirelink::Frame r = one(pty);  // the SetMode waits for the Reenable's slot
+    CHECK(is<lora::Reenable>(r, 2));
     CHECK(count_events(log, EventLevel::Info, "Sent REENABLE to boat 2") == 1);
 
-    REQUIRE(cmd.set_mode(1, boat::mode::Mode::AUTONOMOUS, boat::mode::ArmedState::ARMED));
-    rx = pty.read(1, 200ms);
-    REQUIRE(rx.size() == 1);
-    lora::SetMode m{};
-    REQUIRE(codec::unpack(rx[0].frame, m));
-    CHECK(m.rx_id == 1);
-    CHECK(m.mode == static_cast<uint8_t>(boat::mode::Mode::AUTONOMOUS));
-    CHECK(m.armed == static_cast<uint8_t>(boat::mode::ArmedState::ARMED));
+    echo(up, r);
+    const wirelink::Frame m = one(pty);
+    lora::SetMode sm{};
+    REQUIRE(wirelink::codec::unpack(m, sm));
+    CHECK(sm.rx_id == 1);
+    CHECK(sm.mode == static_cast<uint8_t>(boat::mode::Mode::AUTONOMOUS));
+    CHECK(sm.armed == static_cast<uint8_t>(boat::mode::ArmedState::ARMED));
     CHECK(count_events(log, EventLevel::Info, "Sent SET_MODE AUTONOMOUS ARMED to boat 1") == 1);
-    CHECK(pty.read_for(60ms).empty());  // neither is repeated
+
+    echo(up, m);
+    CHECK(pty.read_for(30ms).empty());  // neither is repeated
+    CHECK(up.status().queued == 0);
 }
 
-template <class T>
-bool is(const PtyPeer::Received& r, uint8_t rx_id) {
-    T m{};
-    return codec::unpack(r.frame, m) && m.rx_id == rx_id;
-}
-
-TEST_CASE("Commander: reenable cancels queued disable repeats", "[model][commander][pty]") {
+TEST_CASE("Commander: reenable cancels disable copies still owed", "[model][commander][pty]") {
     using boat::ids::BROADCAST_ID;
     PtyPeer pty;
     LinkSession link;
     open_link(link, pty);
-    Commander cmd(link);
-    cmd.set_config(Commander::Config{5, 40ms});
+    Uplink up(link);
+    up.set_config(no_timeouts());
+    Commander cmd(up);
+    cmd.set_config(Commander::Config{5});
 
     SECTION("same boat") {
         REQUIRE(cmd.disable(3));
-        REQUIRE(pty.read(1, 200ms).size() == 1);
+        const wirelink::Frame d = one(pty);
+        echo(up, d);
+        CHECK(is<lora::Disable>(one(pty), 3));  // copy 2 in the mailbox
         REQUIRE(cmd.reenable(3));
-        const auto rx = pty.read_for(120ms);
-        // A repeat that went out before the reenable is fine; nothing after it.
-        REQUIRE(!rx.empty());
-        CHECK(is<lora::Reenable>(rx.back(), 3));
-        for (size_t i = 0; i + 1 < rx.size(); ++i) CHECK(is<lora::Disable>(rx[i], 3));
-        CHECK(rx.size() <= 2);
+        const wirelink::Frame r = one(pty);  // replaces it at once
+        CHECK(is<lora::Reenable>(r, 3));
+        echo(up, r);
+        CHECK(pty.read_for(30ms).empty());
+        CHECK(up.status().queued == 0);
     }
-    SECTION("reenable ALL drops every pending disable") {
+    SECTION("reenable ALL drops every disable") {
         REQUIRE(cmd.disable(2));
-        REQUIRE(cmd.disable(BROADCAST_ID));
-        REQUIRE(pty.read(2, 200ms).size() == 2);
+        CHECK(is<lora::Disable>(one(pty), 2));
+        REQUIRE(cmd.disable(BROADCAST_ID));  // queued behind the first
+        CHECK(pty.read_for(30ms).empty());
         REQUIRE(cmd.reenable(BROADCAST_ID));
-        const auto rx = pty.read_for(120ms);
-        REQUIRE(!rx.empty());
-        CHECK(is<lora::Reenable>(rx.back(), BROADCAST_ID));
-        CHECK(rx.size() <= 3);
+        const wirelink::Frame r = one(pty);
+        CHECK(is<lora::Reenable>(r, BROADCAST_ID));
+        echo(up, r);
+        CHECK(pty.read_for(30ms).empty());
+        CHECK(up.status().queued == 0);
     }
-    SECTION("reenabling one boat keeps a broadcast disable repeating") {
+    SECTION("reenabling one boat keeps a broadcast disable") {
         REQUIRE(cmd.disable(BROADCAST_ID));
+        const wirelink::Frame all = one(pty);
         REQUIRE(cmd.disable(2));
-        REQUIRE(pty.read(2, 200ms).size() == 2);
         REQUIRE(cmd.reenable(2));
-        // Wait for the Reenable plus two broadcast repeats rather than a
-        // fixed window: CI machines (macOS especially) oversleep timers.
-        const auto rx = pty.read(3, 1500ms);
-        size_t broadcast = 0;
-        size_t to_2_after_reenable = 0;
-        bool reenabled = false;
-        for (const auto& r : rx) {
-            if (is<lora::Reenable>(r, 2)) reenabled = true;
-            if (is<lora::Disable>(r, BROADCAST_ID)) ++broadcast;
-            if (reenabled && is<lora::Disable>(r, 2)) ++to_2_after_reenable;
+        CHECK(pty.read_for(30ms).empty());  // Disable(ALL) stays in the mailbox
+        for (int copy = 0; copy < 5; ++copy) {
+            echo(up, all);
+            const wirelink::Frame next = one(pty);
+            if (copy < 4) {
+                CHECK(is<lora::Disable>(next, BROADCAST_ID));
+            } else {
+                CHECK(is<lora::Reenable>(next, 2));  // never a Disable to boat 2
+                echo(up, next);
+            }
         }
-        CHECK(reenabled);
-        CHECK(broadcast >= 2);
-        CHECK(to_2_after_reenable == 0);
+        CHECK(pty.read_for(30ms).empty());
+        CHECK(up.status().queued == 0);
     }
-}
-
-TEST_CASE("Commander: destructor drops pending repeats", "[model][commander][pty]") {
-    PtyPeer pty;
-    LinkSession link;
-    open_link(link, pty);
-    {
-        Commander cmd(link);
-        cmd.set_config(Commander::Config{5, 200ms});
-        REQUIRE(cmd.disable(4));
-    }
-    CHECK(pty.read_for(60ms).size() == 1);
 }
 
 TEST_CASE("Commander: closed link reports failure", "[model][commander]") {
     LinkSession link;  // never opened
+    Uplink up(link);
     EventLog log;
-    Commander cmd(link, &log);
-    cmd.set_config(Commander::Config{2, 10ms});
-    CHECK_FALSE(cmd.disable(5));
-    CHECK_FALSE(cmd.reenable(5));
-    CHECK_FALSE(cmd.set_mode(5, boat::mode::Mode::MANUAL, boat::mode::ArmedState::DISARMED));
+    Commander cmd(up, &log);
+    CHECK_FALSE(cmd.disable(3));
+    CHECK_FALSE(cmd.reenable(3));
+    CHECK_FALSE(cmd.set_mode(3, boat::mode::Mode::MANUAL, boat::mode::ArmedState::DISARMED));
     CHECK(count_events(log, EventLevel::Error, "DISABLE") == 1);
     CHECK(count_events(log, EventLevel::Error, "REENABLE") == 1);
     CHECK(count_events(log, EventLevel::Error, "SET_MODE") == 1);

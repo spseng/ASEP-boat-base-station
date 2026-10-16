@@ -5,13 +5,16 @@
 #include <basestation/core/link_session.h>
 #include <basestation/core/teleop.h>
 #include <basestation/core/teleop_sender.h>
-#include <basestation/proto/codec.h>
-#include <basestation/proto/lora.h>
+#include <basestation/core/uplink.h>
+#include <basestation/proto/msgs.h>
 
 #include <boat_defs/ids.h>
 
+#include <wirelink/wire.h>
+
 #include "pty_peer.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -31,7 +34,7 @@ std::vector<lora::Command> commands(const std::vector<PtyPeer::Received>& rx) {
     std::vector<lora::Command> out;
     for (const auto& r : rx) {
         lora::Command c{};
-        REQUIRE(codec::unpack(r.frame, c));
+        REQUIRE(wirelink::codec::unpack(r.frame, c));
         out.push_back(c);
     }
     return out;
@@ -198,8 +201,9 @@ TEST_CASE("TeleopSender: sends commands at the configured rate", "[model][teleop
     PtyPeer pty;
     LinkSession link;
     open_link(link, pty);
+    Uplink uplink(link);
     EventLog log;
-    TeleopSender sender(link, &log);
+    TeleopSender sender(uplink, &log);
     sender.set_config(plain_config(20.0f));
     sender.set_target(3);
     sender.update_input(pad_now(0.5f, 0.25f));
@@ -228,36 +232,40 @@ TEST_CASE("TeleopSender: sends commands at the configured rate", "[model][teleop
     // `sent` is bumped after the write returns, so the reader can be ahead.
     CHECK(st.sent + 1 >= rx.size());
     CHECK(st.send_failures == 0);
+    CHECK(st.held == 0);
 
     CHECK(log.snapshot().size() >= 2);  // target + enabled
 }
 
-TEST_CASE("TeleopSender: disable sends the stop burst then goes quiet", "[model][teleop][pty]") {
+TEST_CASE("TeleopSender: disable sends zero commands for stop_burst cycles, then goes quiet", "[model][teleop][pty]") {
     PtyPeer pty;
     LinkSession link;
     open_link(link, pty);
-    TeleopSender sender(link);
-    sender.set_config(plain_config(50.0f));
+    Uplink uplink(link);
+    TeleopSender sender(uplink);
+    TeleopConfig cfg = plain_config(50.0f);
+    cfg.stop_burst = 1;  // one TDMA cycle (100 ms) of zeros
+    sender.set_config(cfg);
     sender.set_target(2);
     sender.update_input(pad_now(1.0f, 0.0f));
     sender.set_enabled(true);
     REQUIRE(pty.read(3, 500ms).size() == 3);
 
     sender.set_enabled(false);
-    // Generous timeout: CI machines (macOS especially) oversleep timers.
-    auto rx = commands(pty.read(5, 600ms));
+    // Collect until the sender has been quiet for a while (CI oversleeps).
+    std::vector<lora::Command> rx;
+    for (auto more = commands(pty.read_for(300ms)); !more.empty(); more = commands(pty.read_for(150ms)))
+        rx.insert(rx.end(), more.begin(), more.end());
     // At most two driving commands can have been in flight when disabled.
-    REQUIRE(rx.size() >= 3);
-    REQUIRE(rx.size() <= 5);
-    const size_t zeros_from = rx.size() - 3;
-    for (size_t i = 0; i < rx.size(); ++i) {
-        CHECK(rx[i].rx_id == 2);
-        if (i >= zeros_from) {
-            CHECK(rx[i].lin_vel == 0);
-            CHECK(rx[i].ang_vel == 0);
-        }
+    size_t i = 0;
+    while (i < rx.size() && rx[i].lin_vel != 0) ++i;
+    CHECK(i <= 2);
+    CHECK(rx.size() - i >= 1);
+    for (const auto& c : rx) CHECK(c.rx_id == 2);
+    for (; i < rx.size(); ++i) {
+        CHECK(rx[i].lin_vel == 0);
+        CHECK(rx[i].ang_vel == 0);
     }
-    CHECK(pty.read_for(60ms).empty());
     CHECK_FALSE(sender.status().enabled);
 }
 
@@ -265,7 +273,8 @@ TEST_CASE("TeleopSender: stale input sends zero", "[model][teleop][pty]") {
     PtyPeer pty;
     LinkSession link;
     open_link(link, pty);
-    TeleopSender sender(link);
+    Uplink uplink(link);
+    TeleopSender sender(uplink);
     TeleopConfig cfg = plain_config(50.0f);
     cfg.input_stale_ms = 50;
     sender.set_config(cfg);
@@ -291,44 +300,82 @@ TEST_CASE("TeleopSender: target change stops the old target first", "[model][tel
     PtyPeer pty;
     LinkSession link;
     open_link(link, pty);
-    TeleopSender sender(link);
-    sender.set_config(plain_config(50.0f));
+    Uplink uplink(link);
+    TeleopSender sender(uplink);
+    TeleopConfig cfg = plain_config(50.0f);
+    cfg.stop_burst = 1;
+    sender.set_config(cfg);
     sender.set_target(1);
     sender.update_input(pad_now(0.2f, 0.0f));
     sender.set_enabled(true);
     REQUIRE(pty.read(2, 500ms).size() == 2);
 
-    sender.set_target(4);
-    auto rx = commands(pty.read(10, 2000ms));
-    REQUIRE(rx.size() == 10);
-    // Driving commands to boat 1 may still be in flight, then 3 zeros to
-    // boat 1, then boat 4 only.
+    sender.set_target(3);
+    // Driving commands to boat 1 may still be in flight, then zeros to boat
+    // 1 for one cycle, then boat 3 only. Read until boat 3 has had a few.
+    std::vector<lora::Command> rx;
+    const auto deadline = Clock::now() + 3s;
+    auto to3 = [&] { return std::count_if(rx.begin(), rx.end(), [](const lora::Command& c) { return c.rx_id == 3; }); };
+    while (to3() < 3 && Clock::now() < deadline) {
+        const auto more = commands(pty.read(1, 500ms));
+        rx.insert(rx.end(), more.begin(), more.end());
+    }
+    REQUIRE(to3() >= 3);
     size_t i = 0;
     while (i < rx.size() && rx[i].lin_vel != 0) {
         CHECK(rx[i].rx_id == 1);
         ++i;
     }
     CHECK(i <= 2);
-    REQUIRE(i + 3 < rx.size());
-    for (size_t k = 0; k < 3; ++k, ++i) {
-        CHECK(rx[i].rx_id == 1);
-        CHECK(rx[i].lin_vel == 0);
-    }
+    const size_t zeros_from = i;
+    for (; i < rx.size() && rx[i].rx_id == 1; ++i) CHECK(rx[i].lin_vel == 0);
+    CHECK(i > zeros_from);  // at least one zero to boat 1
     for (; i < rx.size(); ++i) {
-        CHECK(rx[i].rx_id == 4);
+        CHECK(rx[i].rx_id == 3);
         CHECK(rx[i].lin_vel == 200);
     }
-    CHECK(sender.status().target == 4);
+    CHECK(sender.status().target == 3);
 }
 
-TEST_CASE("TeleopSender: destructor sends the stop burst", "[model][teleop][pty]") {
+TEST_CASE("TeleopSender: commands are held while a one-shot frame is queued", "[model][teleop][pty]") {
     PtyPeer pty;
     LinkSession link;
     open_link(link, pty);
+    Uplink uplink(link);
+    Uplink::Config ucfg;
+    ucfg.echo_timeout = 60s;
+    ucfg.max_age = 60s;
+    uplink.set_config(ucfg);
+    TeleopSender sender(uplink);
+    sender.set_config(plain_config(50.0f));
+    sender.set_target(1);
+    sender.update_input(pad_now(0.3f, 0.0f));
+
+    REQUIRE(uplink.push_msg(lora::SetMode{1, 0, 1}, 1, "SET_MODE"));
+    const auto first = pty.read(1, 1000ms);
+    REQUIRE(first.size() == 1);
+    sender.set_enabled(true);
+    // A Command now would overwrite the SetMode in the ESP32's mailbox.
+    const auto deadline = Clock::now() + 2s;
+    while (sender.status().held < 3 && Clock::now() < deadline) std::this_thread::sleep_for(5ms);
+    CHECK(sender.status().held >= 3);
+    CHECK(pty.read_for(30ms).empty());
+
+    // The SetMode's land slot: Commands flow again.
+    uplink.on_frame(RxFrame{Clock::now(), first[0].frame});
+    const auto rx = commands(pty.read(2, 1000ms));
+    REQUIRE(rx.size() == 2);
+    CHECK(rx[0].lin_vel == 300);
+}
+
+TEST_CASE("TeleopSender: destructor leaves a zero command", "[model][teleop][pty]") {
+    PtyPeer pty;
+    LinkSession link;
+    open_link(link, pty);
+    Uplink uplink(link);
     {
-        TeleopSender sender(link);
-        TeleopConfig cfg = plain_config(5.0f);  // slow, so the burst must come from the destructor
-        cfg.stop_burst = 2;
+        TeleopSender sender(uplink);
+        TeleopConfig cfg = plain_config(5.0f);  // slow, so the zero must come from the destructor
         sender.set_config(cfg);
         sender.set_target(boat::ids::BROADCAST_ID);
         sender.update_input(pad_now(1.0f, 0.0f));
@@ -336,16 +383,16 @@ TEST_CASE("TeleopSender: destructor sends the stop burst", "[model][teleop][pty]
         REQUIRE(pty.read(1, 500ms).size() == 1);
     }
     const auto rx = commands(pty.read_for(150ms));
-    REQUIRE(rx.size() >= 2);
+    REQUIRE(rx.size() >= 1);
     CHECK(rx.back().rx_id == boat::ids::BROADCAST_ID);
     CHECK(rx.back().lin_vel == 0);
-    CHECK(rx[rx.size() - 2].lin_vel == 0);
 }
 
 TEST_CASE("TeleopSender: closed link counts failures and warns once", "[model][teleop][pty]") {
     LinkSession link;  // never opened
+    Uplink uplink(link);
     EventLog log;
-    TeleopSender sender(link, &log);
+    TeleopSender sender(uplink, &log);
     sender.set_config(plain_config(50.0f));
     sender.update_input(pad_now(0.0f, 0.0f));
     sender.set_enabled(true);

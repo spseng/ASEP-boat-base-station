@@ -19,7 +19,7 @@ const char* msg_type_name(uint8_t type) {
     case static_cast<uint8_t>(lora::MsgType::Disable): return "Disable";
     case static_cast<uint8_t>(lora::MsgType::SelfStatus): return "SelfStatus";
     case static_cast<uint8_t>(lora::MsgType::Command): return "Command";
-    case static_cast<uint8_t>(lora::MsgType::Status): return "Status";
+    case static_cast<uint8_t>(lora::MsgType::Heartbeat): return "Heartbeat";
     case static_cast<uint8_t>(lora::MsgType::Reenable): return "Reenable";
     case static_cast<uint8_t>(lora::MsgType::SetMode): return "SetMode";
     case static_cast<uint8_t>(base::MsgType::RxInfo): return "RxInfo";

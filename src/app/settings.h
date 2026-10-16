@@ -46,7 +46,6 @@ struct Settings {
     // Teleop and commands
     TeleopConfig teleop{};
     int disable_repeats = 3;
-    int repeat_interval_ms = 100;
 
     // View
     float plot_window_s = 120.0f;

@@ -1,5 +1,7 @@
 #include <basestation/core/link_session.h>
-#include <basestation/proto/lora.h>
+#include <basestation/proto/msgs.h>
+
+#include <wirelink/wire.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -83,8 +85,14 @@ bool wait_for(Pred pred) {
 }
 
 wirelink::Frame status_frame(uint8_t tx_id) {
+    lora::SelfStatus s{};
+    s.self.id = tx_id;
+    s.heading_deg = 90.0f;
+    s.state = 0x31;
+    s.gs_rssi = -80.0f;
+    s.gs_snr = 5.0f;
     wirelink::Frame f{};
-    REQUIRE(codec::pack(lora::Status{tx_id, 1, 1, 0, 0, 90.0f, -80.0f, 5.0f}, f));
+    REQUIRE(wirelink::codec::pack(s, f));
     return f;
 }
 
@@ -117,9 +125,9 @@ TEST_CASE("link session receives frames", "[io]") {
     for (uint8_t i = 0; i < 5; ++i) {
         CHECK(rx[i].t >= before);
         CHECK(rx[i].frame.seq == 10 + i);
-        lora::Status s{};
-        REQUIRE(codec::unpack(rx[i].frame, s));
-        CHECK(s.tx_id == i);
+        lora::SelfStatus s{};
+        REQUIRE(wirelink::codec::unpack(rx[i].frame, s));
+        CHECK(s.self.id == i);
     }
     std::vector<RxFrame> more;
     CHECK(session.poll(more) == 0);
@@ -169,17 +177,17 @@ TEST_CASE("link session sends frames with per-type sequence numbers", "[io]") {
     CHECK(port.splitter.stats().frames_bad == 0);
 
     lora::Command c{};
-    REQUIRE(codec::unpack(frames[0], c));
+    REQUIRE(wirelink::codec::unpack(frames[0], c));
     CHECK(frames[0].seq == 0);
     CHECK(c.lin_vel == 100);
-    REQUIRE(codec::unpack(frames[1], c));
+    REQUIRE(wirelink::codec::unpack(frames[1], c));
     CHECK(frames[1].seq == 1);
     CHECK(c.ang_vel == -201);
     lora::Disable d{};
-    REQUIRE(codec::unpack(frames[2], d));
+    REQUIRE(wirelink::codec::unpack(frames[2], d));
     CHECK(frames[2].seq == 0);  // Disable has its own counter
     CHECK(d.rx_id == 0xFF);
-    REQUIRE(codec::unpack(frames[3], c));
+    REQUIRE(wirelink::codec::unpack(frames[3], c));
     CHECK(frames[3].seq == 2);
     CHECK(c.rx_id == 2);
 
@@ -219,14 +227,14 @@ TEST_CASE("link session records rx and tx to the frame log", "[io]") {
     REQUIRE(reader.next(rec));
     CHECK(rec.dir == Direction::Rx);
     CHECK(rec.frame.seq == 77);
-    lora::Status s{};
-    CHECK(codec::unpack(rec.frame, s));
+    lora::SelfStatus s{};
+    CHECK(wirelink::codec::unpack(rec.frame, s));
     for (uint8_t seq = 0; seq < 2; ++seq) {
         REQUIRE(reader.next(rec));
         CHECK(rec.dir == Direction::Tx);
         CHECK(rec.frame.seq == seq);  // the seq actually sent
         lora::SetMode m{};
-        CHECK(codec::unpack(rec.frame, m));
+        CHECK(wirelink::codec::unpack(rec.frame, m));
     }
     CHECK_FALSE(reader.next(rec));
     reader.close();

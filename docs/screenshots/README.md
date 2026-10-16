@@ -7,8 +7,8 @@ drop the `xvfb-run ...` prefix.
 | File | Caption |
 |---|---|
 | `overview.png` | Default layout, connected to three wandering boats, boat 2 selected, session recording on. |
-| `commands_teleop.png` | Boat 2 after a Disable: gate TRIPPED in the map, table and Commands panel; teleop on and targeting it, with the "will ignore commands" warning. |
-| `plots.png` | Plots tab after 30 s: scalar, RSSI in both directions (dots: boat 1 hearing the base while teleop sends to it), SNR. |
+| `commands_teleop.png` | Boat 2 after a Disable: gate TRIPPED in the map, table and Commands panel; teleop on and targeting it, with the "will ignore commands" warning. Boat 3 reports the simulator's GPS fault. |
+| `plots.png` | Plots tab after 30 s: scalar, RSSI in both directions (thick: the base station hearing each boat; thin: each boat hearing the land slot, from its SelfStatus every cycle), SNR. |
 | `map.png` | Map layer under the fleet, base station (BASE) on the south shore, Range column in the Boats table. |
 
 The `--fresh`, `--select`, `--test-disable`, `--test-teleop` and `--focus`

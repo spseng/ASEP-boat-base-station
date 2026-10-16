@@ -13,12 +13,16 @@ endif()
 option(BASESTATION_BUILD_GUI   "Build the SDL3 + Dear ImGui application" ON)
 option(BASESTATION_BUILD_TESTS "Build the unit tests"                    ON)
 option(BASESTATION_BUILD_SIM   "Build the fake base station simulator"   ON)
+option(BASESTATION_BUILD_TOOLS "Build command-line tools (wl_mon)"       ON)
 option(BASESTATION_USE_CURL    "Download map tiles with libcurl if found" ON)
 
 # ---------------------------------------------------------------------------
 # Shared code from the ASEP-boat repository (git submodule, read-only).
 # wirelink's own CMakeLists needs ament_cmake (ROS), so the pieces used here
-# are compiled directly instead of through add_subdirectory.
+# are compiled directly instead of through add_subdirectory. Their headers are
+# SYSTEM includes: warnings in upstream code (e.g. lora::Heartbeat's unused
+# fields() parameter) are not ours to fix and must not break our zero-warning
+# build. framing.cpp itself is compiled without our warning flags.
 # ---------------------------------------------------------------------------
 set(ASEP_BOAT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/ASEP-boat)
 if(NOT EXISTS ${ASEP_BOAT_DIR}/shared/wirelink/src/framing.cpp)
@@ -27,11 +31,11 @@ if(NOT EXISTS ${ASEP_BOAT_DIR}/shared/wirelink/src/framing.cpp)
 endif()
 
 add_library(wirelink STATIC ${ASEP_BOAT_DIR}/shared/wirelink/src/framing.cpp)
-target_include_directories(wirelink PUBLIC ${ASEP_BOAT_DIR}/shared/wirelink/include)
+target_include_directories(wirelink SYSTEM PUBLIC ${ASEP_BOAT_DIR}/shared/wirelink/include)
 target_compile_features(wirelink PUBLIC cxx_std_17)
 
 add_library(boat_defs INTERFACE)
-target_include_directories(boat_defs INTERFACE ${ASEP_BOAT_DIR}/shared/boat_defs/include)
+target_include_directories(boat_defs SYSTEM INTERFACE ${ASEP_BOAT_DIR}/shared/boat_defs/include)
 
 # ---------------------------------------------------------------------------
 # Warnings for code owned by this repository.
@@ -43,7 +47,8 @@ endif()
 
 find_package(Threads REQUIRED)
 
-# Protocol layer: codec + proposed LoRa messages + base-station-local messages.
+# Protocol layer: base-station-local messages and display helpers on top of
+# upstream wirelink (LoRa messages, codec) and boat_defs.
 add_library(basestation_proto INTERFACE)
 target_include_directories(basestation_proto INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src/proto)
 target_link_libraries(basestation_proto INTERFACE wirelink boat_defs)
@@ -59,9 +64,11 @@ add_library(basestation_core STATIC
   src/core/src/teleop.cpp
   src/core/src/teleop_sender.cpp
   src/core/src/commander.cpp
+  src/core/src/uplink.cpp
   src/core/src/map_tiles.cpp
   src/core/src/http_client.cpp
   src/core/src/tile_service.cpp
+  src/core/src/msg_catalog.cpp
 )
 target_include_directories(basestation_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
 target_link_libraries(basestation_core
@@ -88,6 +95,10 @@ include(cmake/Dependencies.cmake)
 
 if(BASESTATION_BUILD_SIM)
   add_subdirectory(src/sim)
+endif()
+
+if(BASESTATION_BUILD_TOOLS)
+  add_subdirectory(src/tools)
 endif()
 
 if(BASESTATION_BUILD_GUI)

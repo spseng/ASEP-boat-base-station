@@ -1,22 +1,38 @@
 // asep_fake_base: pretends to be the base-station ESP32 plus a fleet of
 // boats, on a pseudo-terminal, so the UI and tests run without hardware.
 //
+// Radio model: the fleet's TDMA plan. One cycle (default 10 Hz) is split
+// into one slot per id: the land slot (GROUND_STATION_ID 0) first, then one
+// per boat (3 boats: 4 slots of TRANSMIT_INTERVAL = 25 ms). Each boat
+// broadcasts one SelfStatus in its slot every cycle, which the base station
+// relays to the PC (+ RxInfo). Every boat listens to the land slot and takes
+// its uplink quality (SelfStatus gs_rssi / gs_snr) from the last land frame
+// it heard.
+//
+// The base station is the agreed minimal firmware (WIRELINK_CHANGES.md §3):
+// it keeps ONE "next land frame", the latest the PC sent (any LoRa land
+// type, unchanged, with the PC's seq). In its slot it transmits that frame,
+// or a Heartbeat of its own when it has none, empties the mailbox and writes
+// the transmitted packet back to the PC (the echo). All priority decisions
+// are the PC's (basestation::Uplink).
+//
 // Deliberately independent of basestation_core: incoming bytes are parsed
-// with upstream wirelink::Link and messages are encoded with
-// basestation::codec, so a bug in core cannot hide behind a matching bug here.
+// with upstream wirelink::Link and messages are encoded with upstream
+// wirelink::codec, so a bug in core cannot hide behind a matching bug here.
 
 #include "sim_world.h"
 
-#include <basestation/proto/base.h>
-#include <basestation/proto/codec.h>
-#include <basestation/proto/lora.h>
+#include <basestation/proto/msgs.h>
 #include <basestation/proto/names.h>
 
 #include <boat_defs/ids.h>
+#include <boat_defs/lora.h>
 #include <boat_defs/mode.h>
 #include <boat_defs/units.h>
 
 #include <wirelink/framing.h>
+#include <wirelink/msg/lora.h>
+#include <wirelink/wire.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -27,8 +43,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <random>
 #include <string>
+#include <vector>
 
 #include <fcntl.h>
 #include <poll.h>
@@ -48,10 +66,11 @@ namespace {
 using boat::mode::ArmedState;
 using boat::mode::GateState;
 using boat::mode::Mode;
-namespace lora = basestation::lora;
+namespace lora = wirelink::msg::lora;
 namespace base = basestation::base;
-namespace codec = basestation::codec;
+namespace codec = wirelink::codec;
 namespace names = basestation::names;
+namespace state = basestation::state;
 
 volatile std::sig_atomic_t g_stop = 0;
 
@@ -63,11 +82,13 @@ struct Options {
     bool seed_set = false;
     double loss = 0.05;
     double corrupt = 0.002;
-    double rate_hz = 3.0;
+    // TDMA cycles per second: one TRANSMIT_INTERVAL per id.
+    double rate_hz = 1e6 / (boat::ids::NUM_IDS * boat::lora::config::TRANSMIT_INTERVAL);
     sim::Origin origin;
     std::string link;
     bool quiet = false;
     bool rxinfo = true;
+    bool echo = true;          // --no-echo: firmware that does not echo land frames
     bool basestatus = true;
     bool base_gps = false;     // --base-gps
     bool start_auto = false;   // --start-mode auto
@@ -81,16 +102,22 @@ void usage(std::FILE* out) {
         "Simulates the base-station ESP32 and a boat fleet on a pseudo-terminal.\n"
         "The first line on stdout is 'PORT <path>': open that path in the UI.\n"
         "\n"
+        "Radio: the fleet's TDMA. Every cycle the base station transmits in the first\n"
+        "slot the latest frame the PC sent (or a Heartbeat if none) and echoes it to\n"
+        "the PC; then each boat sends one SelfStatus in its slot.\n"
+        "\n"
         "  --boats N        number of boats, ids 1..N (default 3, max %d)\n"
         "  --seed S         RNG seed (default: random)\n"
         "  --loss P         probability a LoRa packet is lost, each way (default 0.05)\n"
         "  --corrupt P      probability a relayed frame gets a flipped byte (default 0.002)\n"
-        "  --rate HZ        SelfStatus rate per boat (default 3)\n"
+        "  --rate HZ        TDMA cycle rate (default 10): each cycle has one land slot\n"
+        "                   (one frame) and one slot per boat (one SelfStatus each)\n"
         "  --lat DEG        origin latitude  (default 42.3160, Jamaica Pond)\n"
         "  --lon DEG        origin longitude (default -71.1205)\n"
         "  --link PATH      also create a symlink PATH -> pty (removed on exit)\n"
-        "  --quiet          do not print received commands\n"
+        "  --quiet          do not print the land frames the base station transmits\n"
         "  --no-rxinfo      do not send base::RxInfo after relayed frames\n"
+        "  --no-echo        do not echo transmitted land frames to the PC\n"
         "  --no-basestatus  do not send base::BaseStatus\n"
         "  --base-gps       send base::BasePosition at 1 Hz, as if the base ESP32 had a\n"
         "                   GPS: no fix for the first second, then the origin +- ~1 m\n"
@@ -133,6 +160,8 @@ int parse_args(int argc, char** argv, Options& o) {
             o.quiet = true;
         } else if (a == "--no-rxinfo") {
             o.rxinfo = false;
+        } else if (a == "--no-echo") {
+            o.echo = false;
         } else if (a == "--no-basestatus") {
             o.basestatus = false;
         } else if (a == "--base-gps") {
@@ -185,14 +214,8 @@ class FakeBase {
 public:
     FakeBase(const Options& opt, int fd)
         : opt_(opt), fd_(fd), world_(opt.boats, opt.seed) {
-        // TDMA-ish: each boat owns an equal slice of one SelfStatus period.
-        const double period = 1.0 / opt_.rate_hz;
-        const double slot = period / opt_.boats;
-        for (size_t i = 0; i < world_.boats().size(); ++i) {
-            sim::SimBoat& b = world_.boats()[i];
-            b.next_slot_s = 0.05 + slot * static_cast<double>(i);
-            b.next_status_s = b.next_slot_s;
-            if (opt_.start_auto) {
+        if (opt_.start_auto) {
+            for (sim::SimBoat& b : world_.boats()) {
                 b.mode = Mode::AUTONOMOUS;
                 b.armed = ArmedState::ARMED;
             }
@@ -212,7 +235,7 @@ public:
             if (r > 0 && (p.revents & POLLIN)) {
                 const ssize_t n = ::read(fd_, buf, sizeof buf);
                 for (ssize_t i = 0; i < n; ++i) {
-                    if (auto f = rx_link_.feed(buf[i])) handle_land_frame(*f);
+                    if (auto f = rx_link_.feed(buf[i])) handle_pc_frame(*f);
                 }
             } else if (r > 0 && (p.revents & (POLLHUP | POLLERR))) {
                 // No slave side (should not happen: we hold it open). Avoid spinning.
@@ -234,17 +257,17 @@ private:
         world_.step(world_now_);
         world_.maybe_toggle_fault(world_now_);
 
-        const double period = 1.0 / opt_.rate_hz;
-        for (sim::SimBoat& b : world_.boats()) {
-            if (now < b.next_slot_s) continue;
-            send_self_status(b);
-            if (now >= b.next_status_s || b.status_now) {
-                send_status(b);
-                b.status_now = false;
-                b.next_status_s = std::max(b.next_status_s + 1.0, now + 0.5);
-            }
-            b.next_slot_s += period;
-            if (b.next_slot_s < now) b.next_slot_s = now + period;  // fell behind
+        // TDMA: slot 0 is the base station's (GROUND_STATION_ID), slots
+        // 1..N the boats'.
+        const double cycle = 1.0 / opt_.rate_hz;
+        const size_t slots = world_.boats().size() + 1;
+        const double slot_len = cycle / static_cast<double>(slots);
+        while (now >= next_slot_s_) {
+            if (slot_ == 0) land_slot();
+            else send_self_status(world_.boats()[slot_ - 1]);
+            slot_ = (slot_ + 1) % slots;
+            next_slot_s_ += slot_len;
+            if (now - next_slot_s_ > cycle) next_slot_s_ = now;  // stalled: resync, do not burst
         }
 
         if (opt_.basestatus && now >= next_base_s_) {
@@ -288,6 +311,7 @@ private:
         return {boat::units::deg_to_e7(lat), boat::units::deg_to_e7(lon)};
     }
 
+    // A boat's slot: its whole report, every cycle.
     void send_self_status(sim::SimBoat& b) {
         lora::SelfStatus m{};
         m.self.id = b.id;
@@ -295,18 +319,9 @@ private:
         m.self.lat = g.lat;
         m.self.lon = g.lon;
         m.self.scalar = world_.scalar_at(b.north_m, b.east_m);
-        m.self.age_ms = static_cast<uint32_t>((world_now_ - b.fix_time_s) / opt_.time_scale * 1000.0);
-        send_from_boat(b, m);
-    }
-
-    void send_status(sim::SimBoat& b) {
-        lora::Status m{};
-        m.tx_id = b.id;
-        m.mode = static_cast<uint8_t>(b.mode);
-        m.armed = static_cast<uint8_t>(b.armed);
-        m.gate_state = static_cast<uint8_t>(b.gate);
-        m.fault_flags = b.fault_flags;
         m.heading_deg = static_cast<float>(b.heading_deg);
+        m.state = state::encode(static_cast<uint8_t>(b.mode), b.armed, b.gate);
+        m.faults = b.faults;
         m.gs_rssi = b.gs_rssi;
         m.gs_snr = b.gs_snr;
         send_from_boat(b, m);
@@ -372,87 +387,108 @@ private:
         }
     }
 
-    // Land -> boat: which boats hear it is decided independently per boat.
-    void handle_land_frame(const wirelink::Frame& f) {
-        if (base::is_local_type(f.type)) {
-            log_rx("RX local type=0x%02x len=%u (ignored)\n", unsigned(f.type), unsigned(f.len));
+    // PC -> base station: the latest land frame replaces whatever the
+    // mailbox held, unchanged (the PC's seq goes out over the air).
+    void handle_pc_frame(const wirelink::Frame& f) {
+        if (base::is_local_type(f.type) || f.type == static_cast<uint8_t>(lora::MsgType::SelfStatus) ||
+            f.len > lora::MAX_LORA_PAYLOAD - 5) {
+            log_rx("RX type=0x%02x len=%u seq=%u (not a land frame, ignored)\n", unsigned(f.type),
+                   unsigned(f.len), unsigned(f.seq));
             return;
         }
-        ++tx_count_;  // the base station transmits it over LoRa
+        mailbox_ = f;
+    }
+
+    // The base station's slot: the mailbox, else a Heartbeat; then the echo.
+    void land_slot() {
+        wirelink::Frame f{};
+        if (mailbox_) {
+            f = *mailbox_;
+            mailbox_.reset();
+        } else {
+            if (!codec::pack(lora::Heartbeat{}, f)) return;
+            f.seq = heartbeat_seq_++;
+        }
+        ++tx_count_;
+        if (opt_.echo) write_frame(f, f.seq, false);
+        transmit_land(f);
+    }
+
+    // Every boat listens in the land slot and hears the frame independently;
+    // hearing anything updates its uplink quality. Then the addressed boats
+    // that heard it act on it.
+    void transmit_land(const wirelink::Frame& f) {
+        std::vector<sim::SimBoat*> heard;
+        for (sim::SimBoat& b : world_.boats()) {
+            if (world_.chance(opt_.loss)) continue;
+            world_.radio_at(b.north_m, b.east_m, b.gs_rssi, b.gs_snr);
+            heard.push_back(&b);
+        }
 
         switch (static_cast<lora::MsgType>(f.type)) {
+            case lora::MsgType::Heartbeat: return;  // keeps gs_rssi fresh, nothing else
             case lora::MsgType::Disable: {
                 lora::Disable m{};
                 if (!codec::unpack(f, m)) break;
-                const std::string heard = deliver(m.rx_id, [](sim::SimBoat& b) {
-                    if (b.gate != GateState::TRIPPED) b.status_now = true;
-                    b.gate = GateState::TRIPPED;
-                });
-                log_rx("RX Disable rx=%s seq=%u heard=%s\n", target(m.rx_id).c_str(), unsigned(f.seq), heard.c_str());
+                const std::string ids = apply(heard, m.rx_id, [](sim::SimBoat& b) { b.gate = GateState::TRIPPED; });
+                log_rx("TX Disable rx=%s seq=%u heard=%s\n", target(m.rx_id).c_str(), unsigned(f.seq), ids.c_str());
                 return;
             }
             case lora::MsgType::Reenable: {
                 lora::Reenable m{};
                 if (!codec::unpack(f, m)) break;
-                const std::string heard = deliver(m.rx_id, [](sim::SimBoat& b) {
-                    if (b.gate != GateState::ENABLED) b.status_now = true;
-                    b.gate = GateState::ENABLED;
-                });
-                log_rx("RX Reenable rx=%s seq=%u heard=%s\n", target(m.rx_id).c_str(), unsigned(f.seq), heard.c_str());
+                const std::string ids = apply(heard, m.rx_id, [](sim::SimBoat& b) { b.gate = GateState::ENABLED; });
+                log_rx("TX Reenable rx=%s seq=%u heard=%s\n", target(m.rx_id).c_str(), unsigned(f.seq), ids.c_str());
                 return;
             }
             case lora::MsgType::SetMode: {
                 lora::SetMode m{};
                 if (!codec::unpack(f, m)) break;
-                // Any mode value is accepted (newer firmware may know modes
-                // this build does not); unknown modes hold still, like
-                // EMERGENCY_STOP (see sim_world.cpp). Armed is binary.
-                const bool valid = m.armed <= static_cast<uint8_t>(ArmedState::ARMED);
-                const std::string heard = !valid ? "-" : deliver(m.rx_id, [&](sim::SimBoat& b) {
+                // Any mode the state byte can report is accepted (newer
+                // firmware may know modes this build does not); unknown modes
+                // hold still, like EMERGENCY_STOP (see sim_world.cpp). Armed
+                // is binary.
+                const bool valid = m.armed <= static_cast<uint8_t>(ArmedState::ARMED) && m.mode <= state::MAX_MODE;
+                const std::string ids = !valid ? "-" : apply(heard, m.rx_id, [&](sim::SimBoat& b) {
                     b.mode = static_cast<Mode>(m.mode);
                     b.armed = static_cast<ArmedState>(m.armed);
-                    b.status_now = true;
                 });
-                log_rx("RX SetMode rx=%s mode=%s armed=%s seq=%u heard=%s%s\n",
+                log_rx("TX SetMode rx=%s mode=%s armed=%s seq=%u heard=%s%s\n",
                        target(m.rx_id).c_str(), names::mode_name(m.mode).c_str(),
-                       names::armed_name(m.armed).c_str(), unsigned(f.seq), heard.c_str(),
+                       names::armed_name(m.armed).c_str(), unsigned(f.seq), ids.c_str(),
                        valid ? "" : " (invalid, ignored)");
                 return;
             }
             case lora::MsgType::Command: {
                 lora::Command m{};
                 if (!codec::unpack(f, m)) break;
-                const std::string heard = deliver(m.rx_id, [&](sim::SimBoat& b) {
+                const std::string ids = apply(heard, m.rx_id, [&](sim::SimBoat& b) {
                     b.cmd_lin_mm = m.lin_vel;
                     b.cmd_ang_mrad = m.ang_vel;
                     b.cmd_time_s = world_now_;
                 });
-                log_rx("RX Command rx=%s lin=%dmm/s ang=%dmrad/s seq=%u heard=%s\n",
-                       target(m.rx_id).c_str(), int(m.lin_vel), int(m.ang_vel), unsigned(f.seq), heard.c_str());
+                log_rx("TX Command rx=%s lin=%dmm/s ang=%dmrad/s seq=%u heard=%s\n",
+                       target(m.rx_id).c_str(), int(m.lin_vel), int(m.ang_vel), unsigned(f.seq), ids.c_str());
                 return;
             }
-            default:
-                log_rx("RX type=%u len=%u seq=%u (not a land->boat message, ignored)\n",
-                       unsigned(f.type), unsigned(f.len), unsigned(f.seq));
-                return;
+            default: return;  // not a land type; handle_pc_frame refuses those
         }
-        log_rx("RX type=%u len=%u seq=%u (payload did not decode)\n", unsigned(f.type), unsigned(f.len), unsigned(f.seq));
+        log_rx("TX type=%u len=%u seq=%u (payload did not decode, boats ignore it)\n", unsigned(f.type),
+               unsigned(f.len), unsigned(f.seq));
     }
 
-    // Applies `fn` to every addressed boat that hears the packet; returns
+    // Applies `fn` to every boat in `heard` that `rx_id` addresses; returns
     // their ids ("1,3", or "-" if none).
     template <class Fn>
-    std::string deliver(uint8_t rx_id, Fn fn) {
-        std::string heard;
-        for (sim::SimBoat& b : world_.boats()) {
-            if (rx_id != boat::ids::BROADCAST_ID && rx_id != b.id) continue;
-            if (world_.chance(opt_.loss)) continue;
-            world_.radio_at(b.north_m, b.east_m, b.gs_rssi, b.gs_snr);
-            fn(b);
-            if (!heard.empty()) heard += ',';
-            heard += std::to_string(b.id);
+    static std::string apply(const std::vector<sim::SimBoat*>& heard, uint8_t rx_id, Fn fn) {
+        std::string ids;
+        for (sim::SimBoat* b : heard) {
+            if (rx_id != boat::ids::BROADCAST_ID && rx_id != b->id) continue;
+            fn(*b);
+            if (!ids.empty()) ids += ',';
+            ids += std::to_string(b->id);
         }
-        return heard.empty() ? "-" : heard;
+        return ids.empty() ? "-" : ids;
     }
 
 #if defined(__GNUC__)
@@ -473,11 +509,19 @@ private:
     uint8_t base_seq_[256] = {};
     uint32_t rx_ok_ = 0;
     uint32_t rx_bad_ = 0;
-    uint32_t tx_count_ = 0;
+    uint32_t tx_count_ = 0;  // land frames transmitted over LoRa
     double now_ = 0;
     double world_now_ = 0;
     double next_base_s_ = 0.5;
     double next_gps_s_ = 0.3;
+
+    // TDMA schedule.
+    size_t slot_ = 0;
+    double next_slot_s_ = 0.05;
+
+    // The next land frame: the latest the PC sent.
+    std::optional<wirelink::Frame> mailbox_;
+    uint8_t heartbeat_seq_ = 0;  // the base station's own Heartbeats
 };
 
 }  // namespace
@@ -537,8 +581,10 @@ int main(int argc, char** argv) {
     std::fflush(stdout);
     if (!opt.quiet) {
         std::fprintf(stderr,
-            "asep_fake_base: %d boats, seed %u, loss %.3f, corrupt %.4f, rate %.1f Hz, origin %.6f,%.6f%s%s\n",
-            opt.boats, opt.seed, opt.loss, opt.corrupt, opt.rate_hz,
+            "asep_fake_base: %d boats, seed %u, loss %.3f, corrupt %.4f, TDMA %.1f Hz x %d slots of %.1f ms, "
+            "origin %.6f,%.6f%s%s\n",
+            opt.boats, opt.seed, opt.loss, opt.corrupt, opt.rate_hz, opt.boats + 1,
+            1000.0 / opt.rate_hz / (opt.boats + 1),
             opt.origin.lat_deg, opt.origin.lon_deg,
             linked ? ", link " : "", linked ? opt.link.c_str() : "");
     }

@@ -134,13 +134,46 @@ void App::draw_link() {
             ImGui::TextColored(colors::warn, "GPS: no fix (%u satellites)", unsigned(bs.position->satellites));
     }
 
+    ImGui::SeparatorText("Land slot (echoes from the base station)");
+    const Uplink::Status us = uplink_.status();
+    if (!us.echoes_seen()) {
+        ImGui::TextColored(link_.is_open() ? colors::warn : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled),
+                           "No echoes yet.");
+        if (link_.is_open())
+            ImGui::TextWrapped("Firmware that does not echo its land frames still works: each copy of a "
+                               "command then counts as unconfirmed after %d ms.",
+                               static_cast<int>(uplink_.config().echo_timeout.count()));
+    }
+    if (us.echoes_seen() && begin_kv("##uplink")) {
+        kv_u64("Land slots", us.slots);
+        kv_row("Period");
+        if (std::isfinite(us.slot_period_s))
+            ImGui::Text("%.0f ms", us.slot_period_s * 1000.0);
+        else
+            ImGui::TextDisabled("-");
+        kv_row("Last slot");
+        const double age = std::chrono::duration<double>(now - us.last_slot).count();
+        ImGui::TextColored(age_color(age), "%s ago", format_duration(age).c_str());
+        kv_u64("Heartbeat (idle)", us.heartbeats);
+        kv_u64("Commands on air", us.commands_on_air);
+        kv_u64("Disable/Reenable/SetMode on air", us.oneshots_on_air);
+        ImGui::EndTable();
+    }
+    if (begin_kv("##uplink_q")) {
+        kv_u64("Queued commands", us.queued);
+        kv_u64("Teleop held back", us.commands_held);
+        kv_u64("Unconfirmed copies", us.unconfirmed, true);
+        kv_u64("Dropped (link closed)", us.dropped, true);
+        ImGui::EndTable();
+    }
+
     ImGui::SeparatorText("Decoder");
     const FleetModel::Counters& c = fleet_.counters();
     if (begin_kv("##counters")) {
         kv_u64("Frames decoded", c.frames);
         kv_u64("Decode errors", c.decode_errors, true);
         kv_u64("Unknown types", c.unknown_types, true);
-        kv_u64("Land frames heard", c.land_frames);
+        kv_u64("Land echoes", c.land_echoes);
         kv_u64("Orphan RxInfo", c.orphan_rx_info, true);
         kv_u64("Invalid boat ids", c.invalid_ids, true);
         ImGui::EndTable();
@@ -175,7 +208,14 @@ void App::draw_link() {
                 ImGui::TextColored(loss >= 30 ? colors::danger : loss >= 10 ? colors::warn : ImGui::GetStyleColorVec4(ImGuiCol_Text),
                                    "%.1f %%", loss);
                 ImGui::TableNextColumn();
-                ImGui::Text("%llu", static_cast<unsigned long long>(sq.duplicates));
+                if (sq.duplicates > sq.received) {
+                    // e.g. a firmware that wraps every frame with seq 0
+                    ImGui::TextColored(colors::warn, "%llu", static_cast<unsigned long long>(sq.duplicates));
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("The sender's seq is not advancing, so loss cannot be measured.");
+                } else {
+                    ImGui::Text("%llu", static_cast<unsigned long long>(sq.duplicates));
+                }
                 ImGui::TableNextColumn();
                 ImGui::Text("%llu", static_cast<unsigned long long>(sq.restarts));
             }

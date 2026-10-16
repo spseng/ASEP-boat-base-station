@@ -99,6 +99,11 @@ size_t LinkSession::poll(std::vector<RxFrame>& out) {
     return n;
 }
 
+void LinkSession::set_rx_listener(std::function<void(const RxFrame&)> fn) {
+    std::lock_guard<std::mutex> lock(listener_mutex_);
+    listener_ = std::move(fn);
+}
+
 bool LinkSession::send(const wirelink::Frame& frame) {
     std::lock_guard<std::mutex> lock(port_mutex_);
     if (!port_.is_open()) return false;
@@ -164,6 +169,11 @@ void LinkSession::reader_loop() {
 
         if (log_) {
             for (const auto& f : frames) log_->write(Direction::Rx, f);
+        }
+        if (!frames.empty()) {
+            std::lock_guard<std::mutex> lock(listener_mutex_);
+            if (listener_)
+                for (const auto& f : frames) listener_(RxFrame{now, f});
         }
         if (!frames.empty()) {
             std::lock_guard<std::mutex> lock(rx_mutex_);

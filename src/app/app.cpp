@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include <boat_defs/ids.h>
+#include <boat_defs/lora.h>
 #include <boat_defs/serial.h>
 
 #include <SDL3/SDL_filesystem.h>
@@ -48,8 +49,9 @@ App::App(const Options& opts, float ui_scale, SDL_Renderer* renderer)
       ui_scale_(ui_scale),
       link_(&events_, &frame_log_),
       fleet_(&events_),
-      teleop_(link_, &events_),
-      commander_(link_, &events_) {
+      uplink_(link_, &events_),
+      teleop_(uplink_, &events_),
+      commander_(uplink_, &events_) {
     ImGuiIO& io = ImGui::GetIO();
 
     if (char* pref = SDL_GetPrefPath("spseng", "asep-base-station")) {
@@ -124,8 +126,8 @@ App::~App() {
         io.IniFilename = nullptr;
     }
     // Members are destroyed in reverse order: commander_ and teleop_ first
-    // (teleop sends its stop burst while link_ is still open), then link_,
-    // then frame_log_.
+    // (teleop leaves a zero command while link_ is still open), then
+    // uplink_, link_, then frame_log_.
 }
 
 void App::handle_event(const SDL_Event& event) {
@@ -385,12 +387,12 @@ void App::disconnect() {
         return;
     }
     if (teleop_enabled_) {
-        // Stop the boat before the link goes away: let the stop burst go out
-        // (stop_burst commands at rate_hz), then close.
+        // Stop the boat before the link goes away: zero commands for
+        // stop_burst TDMA cycles, plus one for the last land slot, then close.
         set_teleop_enabled(false);
-        const TeleopConfig& c = settings_.teleop;
-        const double burst_s = (c.stop_burst + 1) / std::max(1.0f, c.rate_hz);
-        pending_disconnect_at_ = Clock::now() + std::chrono::milliseconds(static_cast<int>(burst_s * 1000));
+        const int cycles = std::max(0, settings_.teleop.stop_burst) + 1;
+        pending_disconnect_at_ = Clock::now() + cycles * std::chrono::microseconds(boat::ids::NUM_IDS *
+                                                                                   boat::lora::config::TRANSMIT_INTERVAL);
         return;
     }
     link_.close();
@@ -437,7 +439,6 @@ void App::apply_teleop_config(const TeleopConfig& cfg) {
 void App::apply_commander_config() {
     Commander::Config c;
     c.disable_repeats = std::max(1, settings_.disable_repeats);
-    c.repeat_interval = std::chrono::milliseconds(std::max(10, settings_.repeat_interval_ms));
     commander_.set_config(c);
 }
 

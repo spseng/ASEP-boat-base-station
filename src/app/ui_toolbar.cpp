@@ -197,8 +197,8 @@ void App::draw_toolbar() {
     ImGui::EndDisabled();
     ImGui::PopFont();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip(open_link ? "Trip the output gate of EVERY boat (sent %d times)"
-                                    : "Not connected (would trip the output gate of every boat, sent %d times)",
+        ImGui::SetTooltip(open_link ? "Trip the output gate of EVERY boat (in %d land slots)"
+                                    : "Not connected (would trip the output gate of every boat, in %d land slots)",
                           settings_.disable_repeats);
 
     ImGui::End();

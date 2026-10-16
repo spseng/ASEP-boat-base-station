@@ -2,19 +2,20 @@
 //
 //   unix_us,dir,type,type_name,seq,len,fields
 //
-// `fields` is a space-separated key=value list decoded with
-// basestation::codec (best effort), or the payload as hex with --raw.
+// `fields` is a space-separated key=value list decoded with upstream
+// wirelink::codec (best effort), or the payload as hex with --raw.
 // Values never contain commas, so no CSV quoting is needed.
 
 #include <basestation/core/frame_log.h>
-#include <basestation/proto/base.h>
-#include <basestation/proto/codec.h>
-#include <basestation/proto/lora.h>
+#include <basestation/proto/msgs.h>
 #include <basestation/proto/names.h>
 
 #include <boat_defs/ids.h>
 #include <boat_defs/mode.h>
 #include <boat_defs/units.h>
+
+#include <wirelink/msg/lora.h>
+#include <wirelink/wire.h>
 
 #include <cinttypes>
 #include <cstdarg>
@@ -25,10 +26,11 @@
 
 namespace {
 
-namespace lora = basestation::lora;
+namespace lora = wirelink::msg::lora;
 namespace base = basestation::base;
-namespace codec = basestation::codec;
+namespace codec = wirelink::codec;
 namespace names = basestation::names;
+namespace state = basestation::state;
 
 void usage(std::FILE* out) {
     std::fprintf(out,
@@ -48,7 +50,7 @@ const char* type_name(uint8_t t) {
         case static_cast<uint8_t>(lora::MsgType::Disable): return "Disable";
         case static_cast<uint8_t>(lora::MsgType::SelfStatus): return "SelfStatus";
         case static_cast<uint8_t>(lora::MsgType::Command): return "Command";
-        case static_cast<uint8_t>(lora::MsgType::Status): return "Status";
+        case static_cast<uint8_t>(lora::MsgType::Heartbeat): return "Heartbeat";
         case static_cast<uint8_t>(lora::MsgType::Reenable): return "Reenable";
         case static_cast<uint8_t>(lora::MsgType::SetMode): return "SetMode";
         case static_cast<uint8_t>(base::MsgType::RxInfo): return "RxInfo";
@@ -96,9 +98,15 @@ std::string decode(const wirelink::Frame& f) {
         case static_cast<uint8_t>(lora::MsgType::SelfStatus): {
             lora::SelfStatus m{};
             if (codec::unpack(f, m)) {
-                return fmt("id=%u lat=%.7f lon=%.7f scalar=%g age_ms=%" PRIu32,
+                const state::State st = state::decode(m.state);
+                return fmt("id=%u lat=%.7f lon=%.7f scalar=%g heading=%.1f",
                            unsigned(m.self.id), boat::units::e7_to_deg(m.self.lat),
-                           boat::units::e7_to_deg(m.self.lon), double(m.self.scalar), m.self.age_ms);
+                           boat::units::e7_to_deg(m.self.lon), double(m.self.scalar),
+                           double(m.heading_deg)) +
+                       fmt(" mode=%s armed=%s gate=%s state=0x%02x faults=0x%02x gs_rssi=%.1f gs_snr=%.1f",
+                           names::mode_name(st.mode).c_str(), names::armed_name(st.armed).c_str(),
+                           names::gate_name(st.gate).c_str(), unsigned(m.state), unsigned(m.faults),
+                           double(m.gs_rssi), double(m.gs_snr));
             }
             break;
         }
@@ -110,14 +118,9 @@ std::string decode(const wirelink::Frame& f) {
             }
             break;
         }
-        case static_cast<uint8_t>(lora::MsgType::Status): {
-            lora::Status m{};
-            if (codec::unpack(f, m)) {
-                return fmt("tx_id=%u mode=%s armed=%s gate=%s faults=0x%04x heading=%.1f gs_rssi=%.1f gs_snr=%.1f",
-                           unsigned(m.tx_id), names::mode_name(m.mode).c_str(),
-                           names::armed_name(m.armed).c_str(), names::gate_name(m.gate_state).c_str(), unsigned(m.fault_flags), double(m.heading_deg),
-                           double(m.gs_rssi), double(m.gs_snr));
-            }
+        case static_cast<uint8_t>(lora::MsgType::Heartbeat): {
+            lora::Heartbeat m{};
+            if (codec::unpack(f, m)) return "";
             break;
         }
         case static_cast<uint8_t>(lora::MsgType::SetMode): {

@@ -77,10 +77,11 @@ void App::draw_boats_table() {
             base_known ? std::optional<geo::LocalFrame>(geo::LocalFrame(base_pos_.pos)) : std::nullopt;
         static const char* const tips[13] = {
             nullptr, "Time since any frame from this boat", nullptr, nullptr, "Output gate (Disable trips it)",
-            "Fault flags from the boat's Status", "SelfStatus scalar value", "Compass heading, else course over ground",
+            "Fault flags from the boat's SelfStatus", "SelfStatus scalar value",
+            "Compass heading, else course over ground",
             "Distance and bearing from the base station (for LoRa range checks)",
             "RSSI dBm / SNR dB of this boat's frames at the base station (RxInfo)",
-            "RSSI dBm / SNR dB of the base station's last frame at this boat (from its Status)",
+            "RSSI dBm / SNR dB of the base station's last frame at this boat (its SelfStatus; - = none heard yet)",
             "Frames lost, from sequence-number gaps, all message types", "Frames received from this boat"};
         // Right-click a header to show / hide columns.
         ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
@@ -109,8 +110,8 @@ void App::draw_boats_table() {
             ImGui::TableNextColumn();
             ImGui::TextColored(age_color(age), "%s", format_duration(age).c_str());
 
-            if (b.status) {
-                const lora::Status& st = *b.status;
+            if (b.self_status) {
+                const state::State& st = b.state;
                 ImGui::TableNextColumn();
                 if (names::find_mode(st.mode)) {
                     ImGui::TextUnformatted(names::mode_name(st.mode).c_str());
@@ -121,18 +122,16 @@ void App::draw_boats_table() {
                 }
 
                 ImGui::TableNextColumn();
-                const bool armed = st.armed == static_cast<uint8_t>(boat::mode::ArmedState::ARMED);
-                if (armed) ImGui::TextUnformatted(names::armed_name(st.armed).c_str());
+                if (st.is_armed()) ImGui::TextUnformatted(names::armed_name(st.armed).c_str());
                 else ImGui::TextDisabled("%s", names::armed_name(st.armed).c_str());
 
                 ImGui::TableNextColumn();
-                const bool tripped = st.gate_state == static_cast<uint8_t>(boat::mode::GateState::TRIPPED);
-                const bool enabled = st.gate_state == static_cast<uint8_t>(boat::mode::GateState::ENABLED);
-                ImGui::TextColored(tripped ? colors::danger : enabled ? colors::ok : colors::warn, "%s",
-                                   names::gate_name(st.gate_state).c_str());
+                ImGui::TextColored(st.is_tripped() ? colors::danger : colors::ok, "%s",
+                                   names::gate_name(st.gate).c_str());
 
                 ImGui::TableNextColumn();
-                if (st.fault_flags) ImGui::TextColored(colors::warn, "%s", names::fault_list(st.fault_flags).c_str());
+                const uint8_t faults = b.self_status->faults;
+                if (faults) ImGui::TextColored(colors::warn, "%s", names::fault_list(faults).c_str());
                 else dash();
             } else {
                 for (int i = 0; i < 4; ++i) {
@@ -166,7 +165,7 @@ void App::draw_boats_table() {
             else dash();
 
             ImGui::TableNextColumn();
-            if (b.status) rssi_snr(b.status->gs_rssi, b.status->gs_snr);
+            if (b.self_status) rssi_snr(b.self_status->gs_rssi, b.self_status->gs_snr);
             else dash();
 
             ImGui::TableNextColumn();

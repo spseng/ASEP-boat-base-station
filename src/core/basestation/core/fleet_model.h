@@ -6,8 +6,7 @@
 #include <basestation/core/common.h>
 #include <basestation/core/event_log.h>
 #include <basestation/core/geo.h>
-#include <basestation/proto/base.h>
-#include <basestation/proto/lora.h>
+#include <basestation/proto/msgs.h>
 
 #include <cmath>
 #include <cstdint>
@@ -55,19 +54,19 @@ struct BoatState {
     Clock::time_point first_heard{};
     Clock::time_point last_heard{};  // any frame from this boat
 
-    // From lora::SelfStatus.
+    // From lora::SelfStatus, the boat's whole report (position, scalar,
+    // heading, state, faults, how well it hears land), sent once per TDMA
+    // cycle. NaN heading / gs_rssi / gs_snr mean unknown.
     std::optional<lora::SelfStatus> self_status;
     Clock::time_point self_status_time{};
-
-    // From lora::Status.
-    std::optional<lora::Status> status;
-    Clock::time_point status_time{};
+    // self_status->state decoded; valid whenever self_status is set.
+    state::State state{};
 
     // From base::RxInfo attached to this boat's frames (base station's view).
     std::optional<base::RxInfo> rx_info;
 
     // Course over ground derived from the trail (NaN until the boat has moved
-    // more than a couple of metres). Used when Status.heading_deg is NaN.
+    // more than a couple of metres). Used when SelfStatus.heading_deg is NaN.
     float derived_course_deg = NAN;
 
     std::map<uint8_t, SeqStats> seq;  // key: lora::MsgType
@@ -81,7 +80,9 @@ struct BoatState {
 
     // Aggregate loss over every type from this boat.
     SeqStats total_seq() const;
-    // Best available heading: Status.heading_deg, else derived course, else NaN.
+    // The last SelfStatus carried a heading (not NaN).
+    bool has_compass_heading() const;
+    // Best available heading: SelfStatus.heading_deg, else derived course, else NaN.
     float heading_deg() const;
 };
 
@@ -125,7 +126,7 @@ public:
         uint64_t frames = 0;
         uint64_t decode_errors = 0;   // known type, payload failed to unpack
         uint64_t unknown_types = 0;   // type not in lora:: or base::
-        uint64_t land_frames = 0;     // land->boat types heard (another station, or echo)
+        uint64_t land_echoes = 0;     // land types: the base station echoing its own land slot
         uint64_t orphan_rx_info = 0;  // RxInfo not directly after a boat frame
         uint64_t invalid_ids = 0;     // boat id outside BOAT_ID_MIN..MAX
     };
@@ -139,8 +140,9 @@ public:
     explicit FleetModel(EventLog* events = nullptr, Clock::time_point t0 = Clock::now());
 
     // Decodes and applies one frame. Emits events for notable transitions:
-    // first frame from a boat, gate tripped/cleared, mode or armed change,
-    // fault bits set/cleared, base-station reboot.
+    // first frame from a boat; from consecutive SelfStatus: gate
+    // tripped/cleared, mode or armed change, fault bits set/cleared; and
+    // base-station reboot.
     void ingest(const RxFrame& rx);
 
     const std::map<uint8_t, BoatState>& boats() const { return boats_; }
@@ -160,6 +162,7 @@ public:
 private:
     void attach_rx_info(const RxFrame& rx, const base::RxInfo& info);
     BoatState& boat(uint8_t id, Clock::time_point t);
+    void report_changes(const BoatState& b, const lora::SelfStatus& msg, const state::State& st);
     void prune(BoatState& b, double now_s);
 
     EventLog* events_;

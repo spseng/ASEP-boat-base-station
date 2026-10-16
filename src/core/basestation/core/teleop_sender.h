@@ -1,17 +1,22 @@
 #pragma once
 
-// Sends teleop Command frames at a fixed rate from its own thread, so a
-// stalled or minimised UI cannot freeze the last command in place: the UI
-// thread only pushes gamepad snapshots, and a snapshot older than
-// TeleopConfig::input_stale_ms produces a zero command.
+// Offers teleop Command frames to the Uplink at a fixed rate from its own
+// thread, so a stalled or minimised UI cannot freeze the last command in
+// place: the UI thread only pushes gamepad snapshots, and a snapshot older
+// than TeleopConfig::input_stale_ms produces a zero command.
+//
+// The base-station ESP32 keeps only the newest Command and transmits it in
+// the next land slot, so rate_hz sets how fresh that command is, not how
+// many go on air (one per TDMA cycle at most). While Disable / Reenable /
+// SetMode are queued the Uplink holds Commands back (counted as `held`).
 //
 // While enabled: one Command per 1/rate_hz to the current target, zero
 // velocity unless compute_teleop() says driving.
-// On disable, or on a target change: TeleopConfig::stop_burst zero commands
-// to the previous target before stopping / switching.
+// On disable, or on a target change: zero commands to the previous target
+// for TeleopConfig::stop_burst TDMA cycles before stopping / switching.
 
-#include <basestation/core/link_session.h>
 #include <basestation/core/teleop.h>
+#include <basestation/core/uplink.h>
 
 #include <atomic>
 #include <condition_variable>
@@ -27,12 +32,13 @@ public:
         uint8_t target = 0;
         TeleopOutput last{};
         uint64_t sent = 0;
+        uint64_t held = 0;  // not offered: a one-shot command was queued
         uint64_t send_failures = 0;
         Clock::time_point last_sent{};
     };
 
-    explicit TeleopSender(LinkSession& link, EventLog* events = nullptr);
-    ~TeleopSender();  // stops the thread (sending the stop burst if enabled)
+    explicit TeleopSender(Uplink& uplink, EventLog* events = nullptr);
+    ~TeleopSender();  // stops the thread (leaving a zero command if enabled)
     TeleopSender(const TeleopSender&) = delete;
     TeleopSender& operator=(const TeleopSender&) = delete;
 
@@ -49,7 +55,7 @@ public:
 private:
     void loop();
 
-    LinkSession& link_;
+    Uplink& uplink_;
     EventLog* events_;
 
     mutable std::mutex mutex_;
@@ -57,8 +63,8 @@ private:
     TeleopConfig cfg_{};
     GamepadSnapshot pad_{};
     Status status_{};
-    int pending_stop_ = 0;         // zero commands still owed
-    uint8_t pending_stop_target_ = 0;
+    Clock::time_point stop_until_{};  // zero commands to stop_target_ until then
+    uint8_t stop_target_ = 0;
     bool quit_ = false;
     std::thread thread_;
 };

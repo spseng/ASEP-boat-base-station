@@ -77,6 +77,13 @@ public:
     // Everything that arrives within `window`.
     std::vector<Received> read_for(std::chrono::milliseconds window) { return read(SIZE_MAX, window); }
 
+    // Sends a frame to the LinkSession, as the ESP32 would.
+    void write(const wirelink::Frame& f, uint8_t seq) {
+        const auto pkt = wirelink::framing::wrap(f, seq);
+        REQUIRE(pkt);
+        REQUIRE(::write(master_, pkt->data.data(), pkt->len) == static_cast<ssize_t>(pkt->len));
+    }
+
 private:
     int master_ = -1;
     int slave_ = -1;

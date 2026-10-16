@@ -3,10 +3,12 @@
 
 #include <basestation/core/fleet_model.h>
 #include <basestation/core/geo.h>
-#include <basestation/proto/codec.h>
+#include <basestation/proto/msgs.h>
 
 #include <boat_defs/mode.h>
 #include <boat_defs/units.h>
+
+#include <wirelink/wire.h>
 
 #include <cmath>
 #include <string>
@@ -26,34 +28,41 @@ Clock::time_point at(double s) {
 template <class T>
 RxFrame make_rx(const T& msg, uint8_t seq = 0, double t = 0.0) {
     RxFrame r{at(t), {}};
-    REQUIRE(codec::pack(msg, r.frame));
+    REQUIRE(wirelink::codec::pack(msg, r.frame));
     r.frame.seq = seq;
     return r;
 }
 
-// SelfStatus for `id` at a north/east offset (metres) from HOME.
+// SelfStatus for `id` at a north/east offset (metres) from HOME: MANUAL,
+// DISARMED, gate ENABLED, no faults, no compass, land not heard yet.
 lora::SelfStatus self_at(uint8_t id, double north_m = 0, double east_m = 0, float scalar = 0) {
+    using namespace boat::mode;
     const geo::LatLon p = geo::LocalFrame(HOME).to_geo({north_m, east_m});
     lora::SelfStatus s{};
     s.self.id = id;
     s.self.lat = boat::units::deg_to_e7(p.lat_deg);
     s.self.lon = boat::units::deg_to_e7(p.lon_deg);
     s.self.scalar = scalar;
+    s.heading_deg = NAN;
+    s.state = state::encode(Mode::MANUAL, ArmedState::DISARMED, GateState::ENABLED);
+    s.faults = 0;
+    s.gs_rssi = NAN;
+    s.gs_snr = NAN;
     return s;
 }
 
-lora::Status status_of(uint8_t id, boat::mode::Mode mode = boat::mode::Mode::MANUAL,
-                       boat::mode::ArmedState armed = boat::mode::ArmedState::DISARMED,
-                       boat::mode::GateState gate = boat::mode::GateState::ENABLED,
-                       uint16_t faults = 0, float heading = NAN, float gs_rssi = NAN) {
-    return lora::Status{id,
-                        static_cast<uint8_t>(mode),
-                        static_cast<uint8_t>(armed),
-                        static_cast<uint8_t>(gate),
-                        faults,
-                        heading,
-                        gs_rssi,
-                        NAN};
+// SelfStatus at HOME with the given state.
+lora::SelfStatus status_of(uint8_t id, boat::mode::Mode mode = boat::mode::Mode::MANUAL,
+                           boat::mode::ArmedState armed = boat::mode::ArmedState::DISARMED,
+                           boat::mode::GateState gate = boat::mode::GateState::ENABLED, uint8_t faults = 0,
+                           float heading = NAN, float gs_rssi = NAN, float gs_snr = NAN) {
+    lora::SelfStatus s = self_at(id);
+    s.state = state::encode(mode, armed, gate);
+    s.faults = faults;
+    s.heading_deg = heading;
+    s.gs_rssi = gs_rssi;
+    s.gs_snr = gs_snr;
+    return s;
 }
 
 size_t count_events(const EventLog& log, EventLevel level, const std::string& text) {
@@ -117,7 +126,7 @@ TEST_CASE("FleetModel: first frame creates the boat and logs it once", "[model][
     FleetModel m(&log, T0);
     m.ingest(make_rx(self_at(2), 0, 1.0));
     m.ingest(make_rx(self_at(2), 1, 2.0));
-    m.ingest(make_rx(status_of(2), 0, 2.5));
+    m.ingest(make_rx(status_of(2, boat::mode::Mode::AUTONOMOUS, boat::mode::ArmedState::ARMED), 2, 2.5));
 
     REQUIRE(m.boats().count(2) == 1);
     const BoatState& b = m.boats().at(2);
@@ -126,30 +135,39 @@ TEST_CASE("FleetModel: first frame creates the boat and logs it once", "[model][
     CHECK(b.last_heard == at(2.5));
     CHECK(b.frames == 3);
     CHECK(b.self_status.has_value());
-    CHECK(b.self_status_time == at(2.0));
-    CHECK(b.status.has_value());
-    CHECK(b.seq.at(static_cast<uint8_t>(lora::MsgType::SelfStatus)).received == 2);
-    CHECK(b.seq.at(static_cast<uint8_t>(lora::MsgType::Status)).received == 1);
+    CHECK(b.self_status_time == at(2.5));
+    CHECK(b.state.mode == static_cast<uint8_t>(boat::mode::Mode::AUTONOMOUS));
+    CHECK(b.state.is_armed());
+    CHECK_FALSE(b.state.is_tripped());
+    CHECK(b.seq.at(static_cast<uint8_t>(lora::MsgType::SelfStatus)).received == 3);
+    CHECK(b.seq.size() == 1);
     CHECK(count_events(log, EventLevel::Info, "Boat 2 first heard") == 1);
     CHECK(m.counters().frames == 3);
 }
 
-TEST_CASE("FleetModel: per-type seq loss and total_seq", "[model][fleet]") {
+TEST_CASE("FleetModel: seq loss per boat and type, and total_seq", "[model][fleet]") {
     FleetModel m(nullptr, T0);
     for (int q : {254, 255, 0, 1}) m.ingest(make_rx(self_at(1), static_cast<uint8_t>(q)));
-    m.ingest(make_rx(status_of(1), 10));
-    m.ingest(make_rx(status_of(1), 14));
-    m.ingest(make_rx(status_of(1), 14));
+    m.ingest(make_rx(self_at(2), 10));
+    m.ingest(make_rx(self_at(2), 14));
+    m.ingest(make_rx(self_at(2), 14));
+    // Land frames have the land station's seq and belong to no boat.
+    m.ingest(make_rx(lora::Command{1, 0, 0}, 200));
+    m.ingest(make_rx(lora::Heartbeat{}, 90));
 
-    const BoatState& b = m.boats().at(1);
-    CHECK(b.seq.at(static_cast<uint8_t>(lora::MsgType::SelfStatus)).lost == 0);
-    const SeqStats& st = b.seq.at(static_cast<uint8_t>(lora::MsgType::Status));
+    const BoatState& b1 = m.boats().at(1);
+    CHECK(b1.seq.at(static_cast<uint8_t>(lora::MsgType::SelfStatus)).lost == 0);
+    CHECK(b1.seq.at(static_cast<uint8_t>(lora::MsgType::SelfStatus)).received == 4);
+    CHECK(b1.seq.size() == 1);
+
+    const BoatState& b2 = m.boats().at(2);
+    const SeqStats& st = b2.seq.at(static_cast<uint8_t>(lora::MsgType::SelfStatus));
     CHECK(st.lost == 3);
     CHECK(st.duplicates == 1);
 
-    const SeqStats total = b.total_seq();
+    const SeqStats total = b2.total_seq();
     CHECK(total.initialised);
-    CHECK(total.received == 6);
+    CHECK(total.received == 2);
     CHECK(total.lost == 3);
     CHECK(total.duplicates == 1);
     CHECK(BoatState{}.total_seq().received == 0);
@@ -175,7 +193,7 @@ TEST_CASE("FleetModel: RxInfo attaches only directly after a boat frame", "[mode
     m.ingest(make_rx(info));  // second RxInfo in a row: owner already taken
     CHECK(m.counters().orphan_rx_info == 2);
 
-    m.ingest(make_rx(lora::Disable{3}));  // land frame in between
+    m.ingest(make_rx(lora::Heartbeat{}));  // land frame in between
     m.ingest(make_rx(info));
     CHECK(m.counters().orphan_rx_info == 3);
 
@@ -188,79 +206,98 @@ TEST_CASE("FleetModel: RxInfo attaches only directly after a boat frame", "[mode
     CHECK(b.rx_info->rssi == -90.0f);
     CHECK(b.rx_rssi_history.size() == 2);
     CHECK(m.counters().orphan_rx_info == 4);
-    CHECK(m.counters().land_frames == 1);
+    CHECK(m.counters().land_echoes == 1);
 }
 
-TEST_CASE("FleetModel: Status transitions produce events", "[model][fleet]") {
+TEST_CASE("FleetModel: SelfStatus transitions produce events", "[model][fleet]") {
     using namespace boat::mode;
     EventLog log;
     FleetModel m(&log, T0);
 
-    m.ingest(make_rx(status_of(4, Mode::MANUAL, ArmedState::DISARMED, GateState::ENABLED)));
+    m.ingest(make_rx(status_of(3, Mode::MANUAL, ArmedState::DISARMED, GateState::ENABLED)));
     const auto base_events = log.snapshot().size();  // just "first heard"
     CHECK(base_events == 1);
 
-    m.ingest(make_rx(status_of(4, Mode::MANUAL, ArmedState::DISARMED, GateState::TRIPPED), 1));
-    CHECK(count_events(log, EventLevel::Warn, "Boat 4 gate TRIPPED") == 1);
+    m.ingest(make_rx(status_of(3, Mode::MANUAL, ArmedState::DISARMED, GateState::TRIPPED), 1));
+    CHECK(count_events(log, EventLevel::Warn, "Boat 3 gate TRIPPED") == 1);
 
-    m.ingest(make_rx(status_of(4, Mode::MANUAL, ArmedState::DISARMED, GateState::TRIPPED), 2));
+    m.ingest(make_rx(status_of(3, Mode::MANUAL, ArmedState::DISARMED, GateState::TRIPPED), 2));
     CHECK(count_events(log, EventLevel::Warn, "gate TRIPPED") == 1);  // no repeat
 
-    m.ingest(make_rx(status_of(4, Mode::MANUAL, ArmedState::DISARMED, GateState::ENABLED), 3));
-    CHECK(count_events(log, EventLevel::Info, "Boat 4 gate ENABLED") == 1);
+    m.ingest(make_rx(status_of(3, Mode::MANUAL, ArmedState::DISARMED, GateState::ENABLED), 3));
+    CHECK(count_events(log, EventLevel::Info, "Boat 3 gate ENABLED") == 1);
 
-    m.ingest(make_rx(status_of(4, Mode::AUTONOMOUS, ArmedState::ARMED, GateState::ENABLED), 4));
-    CHECK(count_events(log, EventLevel::Info, "Boat 4 mode MANUAL -> AUTONOMOUS") == 1);
-    CHECK(count_events(log, EventLevel::Info, "Boat 4 ARMED") == 1);
+    m.ingest(make_rx(status_of(3, Mode::AUTONOMOUS, ArmedState::ARMED, GateState::ENABLED), 4));
+    CHECK(count_events(log, EventLevel::Info, "Boat 3 mode MANUAL -> AUTONOMOUS") == 1);
+    CHECK(count_events(log, EventLevel::Info, "Boat 3 ARMED") == 1);
 
-    m.ingest(make_rx(status_of(4, Mode::RETURN_TO_HOME, ArmedState::DISARMED, GateState::ENABLED,
+    m.ingest(make_rx(status_of(3, Mode::RETURN_TO_HOME, ArmedState::DISARMED, GateState::ENABLED,
                                fault::GPS_FAILURE | fault::BATTERY_LOW),
                      5));
     CHECK(count_events(log, EventLevel::Info, "mode AUTONOMOUS -> RETURN_TO_HOME") == 1);
-    CHECK(count_events(log, EventLevel::Info, "Boat 4 DISARMED") == 1);
-    CHECK(count_events(log, EventLevel::Warn, "Boat 4 fault: GPS_FAILURE, BATTERY_LOW") == 1);
+    CHECK(count_events(log, EventLevel::Info, "Boat 3 DISARMED") == 1);
+    CHECK(count_events(log, EventLevel::Warn, "Boat 3 fault: GPS_FAILURE, BATTERY_LOW") == 1);
 
-    m.ingest(make_rx(status_of(4, Mode::RETURN_TO_HOME, ArmedState::DISARMED, GateState::ENABLED,
+    m.ingest(make_rx(status_of(3, Mode::RETURN_TO_HOME, ArmedState::DISARMED, GateState::ENABLED,
                                fault::BATTERY_LOW | fault::MOTOR_FAILURE),
                      6));
-    CHECK(count_events(log, EventLevel::Warn, "Boat 4 fault: MOTOR_FAILURE") == 1);
-    CHECK(count_events(log, EventLevel::Info, "Boat 4 fault cleared: GPS_FAILURE") == 1);
+    CHECK(count_events(log, EventLevel::Warn, "Boat 3 fault: MOTOR_FAILURE") == 1);
+    CHECK(count_events(log, EventLevel::Info, "Boat 3 fault cleared: GPS_FAILURE") == 1);
 
-    // Nothing changed: no new events.
+    // Nothing changed (only position, heading, link quality): no new events.
     const auto n = log.snapshot().size();
-    m.ingest(make_rx(status_of(4, Mode::RETURN_TO_HOME, ArmedState::DISARMED, GateState::ENABLED,
-                               fault::BATTERY_LOW | fault::MOTOR_FAILURE),
-                     7));
+    lora::SelfStatus same = status_of(3, Mode::RETURN_TO_HOME, ArmedState::DISARMED, GateState::ENABLED,
+                                      fault::BATTERY_LOW | fault::MOTOR_FAILURE, 45.0f, -90.0f, 3.0f);
+    same.self = self_at(3, 10, 10).self;
+    m.ingest(make_rx(same, 7));
     CHECK(log.snapshot().size() == n);
+
+    // A mode this build does not know still reports, by number.
+    lora::SelfStatus newer = same;
+    newer.state = state::encode(uint8_t{9}, ArmedState::DISARMED, GateState::ENABLED);
+    m.ingest(make_rx(newer, 8));
+    CHECK(count_events(log, EventLevel::Info, "Boat 3 mode RETURN_TO_HOME -> MODE 9") == 1);
+    CHECK(m.boats().at(3).state.mode == 9);
 }
 
-TEST_CASE("FleetModel: first Status reports a tripped gate and active faults", "[model][fleet]") {
+TEST_CASE("FleetModel: first SelfStatus reports a tripped gate and active faults", "[model][fleet]") {
     using namespace boat::mode;
     EventLog log;
     FleetModel m(&log, T0);
-    m.ingest(make_rx(status_of(5, Mode::EMERGENCY_STOP, ArmedState::DISARMED, GateState::TRIPPED,
+    m.ingest(make_rx(status_of(2, Mode::EMERGENCY_STOP, ArmedState::DISARMED, GateState::TRIPPED,
                                fault::SENSOR_FAILURE)));
-    CHECK(count_events(log, EventLevel::Warn, "Boat 5 gate TRIPPED") == 1);
-    CHECK(count_events(log, EventLevel::Warn, "Boat 5 fault: SENSOR_FAILURE") == 1);
+    CHECK(count_events(log, EventLevel::Warn, "Boat 2 gate TRIPPED") == 1);
+    CHECK(count_events(log, EventLevel::Warn, "Boat 2 fault: SENSOR_FAILURE") == 1);
     CHECK(count_events(log, EventLevel::Info, "mode") == 0);
 }
 
-TEST_CASE("FleetModel: gs_rssi history skips NaN", "[model][fleet]") {
+TEST_CASE("FleetModel: gs_rssi / gs_snr NaN means the boat has not heard land", "[model][fleet]") {
     using namespace boat::mode;
     FleetModel m(nullptr, T0);
     m.ingest(make_rx(status_of(1), 0, 1.0));
-    m.ingest(make_rx(status_of(1, Mode::MANUAL, ArmedState::DISARMED, GateState::ENABLED, 0, NAN, -95.0f), 1,
-                     2.0));
     const BoatState& b = m.boats().at(1);
+    REQUIRE(b.self_status.has_value());
+    CHECK(std::isnan(b.self_status->gs_rssi));
+    CHECK(std::isnan(b.self_status->gs_snr));
+    CHECK(b.gs_rssi_history.empty());
+
+    m.ingest(make_rx(status_of(1, Mode::MANUAL, ArmedState::DISARMED, GateState::ENABLED, 0, NAN, -95.0f, 4.5f), 1,
+                     2.0));
     REQUIRE(b.gs_rssi_history.size() == 1);
     CHECK(b.gs_rssi_history.front().v == -95.0f);
     CHECK_THAT(b.gs_rssi_history.front().t, WithinAbs(2.0, 1e-9));
+    CHECK(b.self_status->gs_snr == 4.5f);
+
+    // Every cycle adds a sample while the boat hears land.
+    m.ingest(make_rx(status_of(1, Mode::MANUAL, ArmedState::DISARMED, GateState::ENABLED, 0, NAN, -96.0f, 4.0f), 2,
+                     2.1));
+    CHECK(b.gs_rssi_history.size() == 2);
 }
 
 TEST_CASE("FleetModel: invalid boat ids are ignored", "[model][fleet]") {
     FleetModel m(nullptr, T0);
     m.ingest(make_rx(self_at(0)));
-    m.ingest(make_rx(self_at(11)));
+    m.ingest(make_rx(self_at(4)));  // BOAT_ID_MAX is 3
     m.ingest(make_rx(status_of(255)));
     m.ingest(make_rx(base::RxInfo{-50, 5}));  // must not attach to anything
     CHECK(m.boats().empty());
@@ -297,9 +334,11 @@ TEST_CASE("FleetModel: land->boat frames are counted, not attributed", "[model][
     FleetModel m(nullptr, T0);
     m.ingest(make_rx(lora::Disable{1}));
     m.ingest(make_rx(lora::Command{1, 100, -200}));
+    m.ingest(make_rx(lora::Heartbeat{}));
     m.ingest(make_rx(lora::Reenable{1}));
     m.ingest(make_rx(lora::SetMode{1, 1, 1}));
-    CHECK(m.counters().land_frames == 4);
+    CHECK(m.counters().land_echoes == 5);
+    CHECK(m.counters().unknown_types == 0);
     CHECK(m.boats().empty());
 }
 
@@ -433,13 +472,17 @@ TEST_CASE("FleetModel: derived course and heading preference", "[model][fleet]")
     m.ingest(make_rx(self_at(1, -3, 0), 3, 3));
     CHECK_THAT(m.boats().at(1).derived_course_deg, WithinAbs(225.0, 0.5));
 
-    // Status heading wins when finite...
-    m.ingest(make_rx(status_of(1, boat::mode::Mode::MANUAL, boat::mode::ArmedState::DISARMED,
-                               boat::mode::GateState::ENABLED, 0, 12.5f),
-                     0, 4));
+    CHECK_FALSE(m.boats().at(1).has_compass_heading());
+
+    // The boat's own heading wins when finite...
+    lora::SelfStatus compass = self_at(1, -3, 0);
+    compass.heading_deg = 12.5f;
+    m.ingest(make_rx(compass, 4, 4));
+    CHECK(m.boats().at(1).has_compass_heading());
     CHECK(m.boats().at(1).heading_deg() == 12.5f);
     // ...and derived course is the fallback when it is NaN.
-    m.ingest(make_rx(status_of(1), 1, 5));
+    m.ingest(make_rx(self_at(1, -3, 0), 5, 5));
+    CHECK_FALSE(m.boats().at(1).has_compass_heading());
     CHECK_THAT(m.boats().at(1).heading_deg(), WithinAbs(225.0, 0.5));
 }
 

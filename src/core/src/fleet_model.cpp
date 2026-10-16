@@ -1,11 +1,12 @@
 #include <basestation/core/fleet_model.h>
 
 #include <basestation/core/geo.h>
-#include <basestation/proto/codec.h>
 #include <basestation/proto/names.h>
 
 #include <boat_defs/ids.h>
 #include <boat_defs/mode.h>
+
+#include <wirelink/wire.h>
 
 #include <string>
 
@@ -124,9 +125,12 @@ SeqStats BoatState::total_seq() const {
     return t;
 }
 
+bool BoatState::has_compass_heading() const {
+    return self_status && std::isfinite(self_status->heading_deg);
+}
+
 float BoatState::heading_deg() const {
-    if (status && std::isfinite(status->heading_deg)) return status->heading_deg;
-    return derived_course_deg;
+    return has_compass_heading() ? self_status->heading_deg : derived_course_deg;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +166,28 @@ void FleetModel::prune(BoatState& b, double now_s) {
     prune_samples(b.gs_rssi_history, cutoff);
 }
 
+void FleetModel::report_changes(const BoatState& b, const lora::SelfStatus& msg, const state::State& st) {
+    if (!events_) return;
+    const std::string name = boat_name(b.id);
+    // With no previous SelfStatus, only report states that need attention
+    // (tripped gate, active faults).
+    const state::State* prev = b.self_status ? &b.state : nullptr;
+    if (!prev || prev->gate != st.gate) {
+        if (st.is_tripped())
+            events_->warn(name + " gate TRIPPED");
+        else if (prev)
+            events_->info(name + " gate ENABLED");
+    }
+    if (prev && prev->mode != st.mode)
+        events_->info(name + " mode " + names::mode_name(prev->mode) + " -> " + names::mode_name(st.mode));
+    if (prev && prev->armed != st.armed) events_->info(name + (st.is_armed() ? " ARMED" : " DISARMED"));
+    const uint8_t old_faults = b.self_status ? b.self_status->faults : 0;
+    const auto set = static_cast<uint8_t>(msg.faults & ~old_faults);
+    const auto cleared = static_cast<uint8_t>(old_faults & ~msg.faults);
+    if (set) events_->warn(name + " fault: " + names::fault_list(set));
+    if (cleared) events_->info(name + " fault cleared: " + names::fault_list(cleared));
+}
+
 void FleetModel::attach_rx_info(const RxFrame& rx, const base::RxInfo& info) {
     if (!last_boat_frame_sender_) {
         ++counters_.orphan_rx_info;
@@ -194,7 +220,7 @@ void FleetModel::ingest(const RxFrame& rx) {
         switch (static_cast<base::MsgType>(f.type)) {
         case base::MsgType::RxInfo: {
             base::RxInfo info{};
-            if (!codec::unpack(f, info)) {
+            if (!wirelink::codec::unpack(f, info)) {
                 ++counters_.decode_errors;
                 return;
             }
@@ -205,7 +231,7 @@ void FleetModel::ingest(const RxFrame& rx) {
         }
         case base::MsgType::BaseStatus: {
             base::BaseStatus st{};
-            if (!codec::unpack(f, st)) {
+            if (!wirelink::codec::unpack(f, st)) {
                 ++counters_.decode_errors;
                 return;
             }
@@ -219,7 +245,7 @@ void FleetModel::ingest(const RxFrame& rx) {
         }
         case base::MsgType::BasePosition: {
             base::BasePosition pos{};
-            if (!codec::unpack(f, pos)) {
+            if (!wirelink::codec::unpack(f, pos)) {
                 ++counters_.decode_errors;
                 return;
             }
@@ -242,14 +268,15 @@ void FleetModel::ingest(const RxFrame& rx) {
     switch (static_cast<lora::MsgType>(f.type)) {
     case lora::MsgType::Disable:
     case lora::MsgType::Command:
+    case lora::MsgType::Heartbeat:
     case lora::MsgType::Reenable:
     case lora::MsgType::SetMode:
-        ++counters_.land_frames;
+        ++counters_.land_echoes;
         return;
 
     case lora::MsgType::SelfStatus: {
         lora::SelfStatus msg{};
-        if (!codec::unpack(f, msg)) {
+        if (!wirelink::codec::unpack(f, msg)) {
             ++counters_.decode_errors;
             return;
         }
@@ -261,9 +288,13 @@ void FleetModel::ingest(const RxFrame& rx) {
         b.last_heard = rx.t;
         ++b.frames;
         b.seq[f.type].update(f.seq);
+        const state::State st = state::decode(msg.state);
+        report_changes(b, msg, st);
         b.self_status = msg;
         b.self_status_time = rx.t;
+        b.state = st;
         b.scalar_history.push_back(Sample{now_s, msg.self.scalar});
+        if (std::isfinite(msg.gs_rssi)) b.gs_rssi_history.push_back(Sample{now_s, msg.gs_rssi});
 
         const geo::LatLon p = geo::from_e7(msg.self.lat, msg.self.lon);
         if (plausible_position(p)) {
@@ -291,57 +322,6 @@ void FleetModel::ingest(const RxFrame& rx) {
         }
         prune(b, now_s);
         last_boat_frame_sender_ = msg.self.id;
-        return;
-    }
-
-    case lora::MsgType::Status: {
-        lora::Status msg{};
-        if (!codec::unpack(f, msg)) {
-            ++counters_.decode_errors;
-            return;
-        }
-        if (!is_boat_id(msg.tx_id)) {
-            ++counters_.invalid_ids;
-            return;
-        }
-        BoatState& b = boat(msg.tx_id, rx.t);
-        b.last_heard = rx.t;
-        ++b.frames;
-        b.seq[f.type].update(f.seq);
-
-        if (events_) {
-            const std::string name = boat_name(msg.tx_id);
-            using boat::mode::GateState;
-            constexpr auto TRIPPED = static_cast<uint8_t>(GateState::TRIPPED);
-            constexpr auto ENABLED = static_cast<uint8_t>(GateState::ENABLED);
-            // With no previous Status, only report states that need
-            // attention (tripped gate, active faults).
-            const lora::Status* prev = b.status ? &*b.status : nullptr;
-            if (!prev || prev->gate_state != msg.gate_state) {
-                if (msg.gate_state == TRIPPED)
-                    events_->warn(name + " gate TRIPPED");
-                else if (prev && msg.gate_state == ENABLED)
-                    events_->info(name + " gate ENABLED");
-                else if (prev)
-                    events_->warn(name + " gate state " + std::to_string(msg.gate_state));
-            }
-            if (prev && prev->mode != msg.mode)
-                events_->info(name + " mode " + names::mode_name(prev->mode) + " -> " + names::mode_name(msg.mode));
-            if (prev && prev->armed != msg.armed) {
-                const bool armed = msg.armed == static_cast<uint8_t>(boat::mode::ArmedState::ARMED);
-                events_->info(name + (armed ? " ARMED" : " DISARMED"));
-            }
-            const uint16_t old_faults = prev ? prev->fault_flags : 0;
-            const uint16_t set = static_cast<uint16_t>(msg.fault_flags & ~old_faults);
-            const uint16_t cleared = static_cast<uint16_t>(old_faults & ~msg.fault_flags);
-            if (set) events_->warn(name + " fault: " + names::fault_list(set));
-            if (cleared) events_->info(name + " fault cleared: " + names::fault_list(cleared));
-        }
-        b.status = msg;
-        b.status_time = rx.t;
-        if (std::isfinite(msg.gs_rssi)) b.gs_rssi_history.push_back(Sample{now_s, msg.gs_rssi});
-        prune(b, now_s);
-        last_boat_frame_sender_ = msg.tx_id;
         return;
     }
     }

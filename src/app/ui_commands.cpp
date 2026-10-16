@@ -42,7 +42,7 @@ bool App::target_combo(const char* label, uint8_t& target, bool allow_all) {
     if (ImGui::BeginCombo(label, preview.c_str())) {
         for (const auto& [id, b] : fleet_.boats()) {
             std::string item = boat_label(id);
-            if (b.status) item += "   " + names::mode_name(b.status->mode);
+            if (b.self_status) item += "   " + names::mode_name(b.state.mode);
             ImGui::PushStyleColor(ImGuiCol_Text, boat_color(id));
             if (ImGui::Selectable(item.c_str(), target == id)) {
                 target = id;
@@ -86,7 +86,7 @@ void App::draw_commands() {
     if (red_button("DISABLE", ImVec2(half, em * 2.0f))) commander_.disable(cmd_target_);
     ImGui::PopFont();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Trip the output gate of %s now (sent %d times)", target_text(cmd_target_).c_str(),
+        ImGui::SetTooltip("Trip the output gate of %s now (in %d land slots)", target_text(cmd_target_).c_str(),
                           settings_.disable_repeats);
     ImGui::SameLine();
     if (ImGui::Button("Re-enable...", ImVec2(half, em * 2.0f))) {
@@ -119,7 +119,8 @@ void App::draw_commands() {
         ImGui::Separator();
         if (ImGui::Selectable("Other (raw value)", cmd_mode_idx_ == MODE_COUNT)) cmd_mode_idx_ = MODE_COUNT;
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip("Send any mode number, e.g. one added to newer boat firmware");
+            ImGui::SetTooltip("Send any mode number 0-%u, e.g. one added to newer boat firmware",
+                              unsigned(state::MAX_MODE));
         ImGui::EndCombo();
     }
     if (cmd_mode_idx_ < MODE_COUNT && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
@@ -153,7 +154,9 @@ void App::draw_commands() {
         ImGui::SameLine(em * 4.5f);
         ImGui::SetNextItemWidth(em * 7.0f);
         ImGui::InputInt("##moderaw", &cmd_mode_raw_, 1, 10);
-        cmd_mode_raw_ = std::clamp(cmd_mode_raw_, 0, 255);
+        // SelfStatus reports the mode in 4 bits, so higher values could never
+        // be confirmed by the boat.
+        cmd_mode_raw_ = std::clamp(cmd_mode_raw_, 0, int(state::MAX_MODE));
         ImGui::SameLine();
         ImGui::TextDisabled("= %s", names::mode_name(static_cast<uint8_t>(cmd_mode_raw_)).c_str());
     }
@@ -177,16 +180,14 @@ void App::draw_boat_detail(const BoatState& b) {
     ImGui::PushFont(fonts_.bold, 0.0f);
     ImGui::TextColored(boat_color(b.id), "Boat %u", unsigned(b.id));
     ImGui::PopFont();
-    if (b.status) {
+    if (b.self_status) {
+        const state::State& st = b.state;
         ImGui::SameLine();
-        const bool tripped = b.status->gate_state == static_cast<uint8_t>(boat::mode::GateState::TRIPPED);
-        status_chip(names::gate_name(b.status->gate_state).c_str(), tripped ? colors::danger : colors::ok);
+        status_chip(names::gate_name(st.gate).c_str(), st.is_tripped() ? colors::danger : colors::ok);
         ImGui::SameLine();
-        status_chip(names::mode_name(b.status->mode).c_str(),
-                    names::find_mode(b.status->mode) ? colors::accent : colors::warn);
+        status_chip(names::mode_name(st.mode).c_str(), names::find_mode(st.mode) ? colors::accent : colors::warn);
         ImGui::SameLine();
-        const bool armed = b.status->armed == static_cast<uint8_t>(boat::mode::ArmedState::ARMED);
-        status_chip(names::armed_name(b.status->armed).c_str(), armed ? colors::warn : colors::muted);
+        status_chip(names::armed_name(st.armed).c_str(), st.is_armed() ? colors::warn : colors::muted);
     }
 
     // Wall-clock time for a steady_clock point, for "first heard at".
@@ -209,23 +210,24 @@ void App::draw_boat_detail(const BoatState& b) {
             const geo::LatLon ll = geo::from_e7(self.lat, self.lon);
             row("Position");
             ImGui::Text("%.7f, %.7f", ll.lat_deg, ll.lon_deg);
-            row("Fix age");
-            ImGui::TextColored(self.age_ms > 3000 ? colors::warn : ImGui::GetStyleColorVec4(ImGuiCol_Text), "%u ms",
-                               unsigned(self.age_ms));
+            row("Report age");
+            const double age_s = std::chrono::duration<double>(now - b.self_status_time).count();
+            ImGui::TextColored(age_s > 3.0 ? colors::warn : ImGui::GetStyleColorVec4(ImGuiCol_Text), "%.1f s",
+                               age_s);
             row("Scalar");
             ImGui::Text("%.3f °C", static_cast<double>(self.scalar));
         }
         row("Heading");
         const float hdg = b.heading_deg();
         if (std::isfinite(hdg)) {
-            const bool from_status = b.status && std::isfinite(b.status->heading_deg);
-            ImGui::Text("%.1f°  (%s)", static_cast<double>(hdg), from_status ? "compass" : "course over ground");
+            ImGui::Text("%.1f°  (%s)", static_cast<double>(hdg),
+                        b.has_compass_heading() ? "compass" : "course over ground");
         } else {
             ImGui::TextDisabled("unknown");
         }
-        if (b.status && b.status->fault_flags) {
+        if (b.self_status && b.self_status->faults) {
             row("Faults");
-            ImGui::TextColored(colors::warn, "%s", names::fault_list(b.status->fault_flags).c_str());
+            ImGui::TextColored(colors::warn, "%s", names::fault_list(b.self_status->faults).c_str());
         }
         row("First heard");
         ImGui::Text("%s", wall(b.first_heard).c_str());

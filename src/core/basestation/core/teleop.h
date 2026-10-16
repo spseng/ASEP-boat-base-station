@@ -53,9 +53,9 @@ struct TeleopConfig {
     GamepadButton deadman = GamepadButton::RightShoulder;  // RB
     GamepadButton disable_button = GamepadButton::East;    // B: Disable current target
 
-    float rate_hz = 10.0f;     // command send rate
+    float rate_hz = 20.0f;     // how often the ESP32's Command is refreshed
     int input_stale_ms = 250;  // snapshot older than this -> zero command
-    int stop_burst = 3;        // zero commands sent when teleop is switched off
+    int stop_burst = 3;        // TDMA cycles of zero commands when teleop is switched off
 };
 
 struct TeleopOutput {

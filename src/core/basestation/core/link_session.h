@@ -12,10 +12,12 @@
 #include <basestation/core/frame_log.h>
 #include <basestation/core/frame_splitter.h>
 #include <basestation/core/serial_port.h>
-#include <basestation/proto/codec.h>
+
+#include <wirelink/wire.h>
 
 #include <array>
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -57,10 +59,15 @@ public:
     // Thread-safe. False if closed or the write failed.
     bool send(const wirelink::Frame& frame);
 
+    // Called on the reader thread for every received frame, before it is
+    // queued for poll(). Must be quick and must not call close(). Setting a
+    // new listener (or nullptr) waits for a call in progress to return.
+    void set_rx_listener(std::function<void(const RxFrame&)> fn);
+
     template <class T>
     bool send_msg(const T& msg) {
         wirelink::Frame f{};
-        if (!codec::pack(msg, f)) return false;
+        if (!wirelink::codec::pack(msg, f)) return false;
         return send(f);
     }
 
@@ -76,6 +83,8 @@ private:
     mutable std::mutex port_mutex_;   // guards open/close and writes
     mutable std::mutex rx_mutex_;     // guards rx_queue_
     mutable std::mutex stats_mutex_;  // guards stats_ and last_error_
+    std::mutex listener_mutex_;       // guards listener_ and its calls
+    std::function<void(const RxFrame&)> listener_;
     std::vector<RxFrame> rx_queue_;
     std::array<uint8_t, 256> tx_seq_{};
     Stats stats_{};
