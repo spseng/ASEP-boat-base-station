@@ -15,6 +15,7 @@
 
 #include "pty_peer.h"
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -284,4 +285,29 @@ TEST_CASE("Uplink: a closed link drops one-shot frames after max_age", "[uplink]
     CHECK(up.status().queued == 0);
     CHECK(count_events(log, EventLevel::Error, "REENABLE to boat 1: not sent") == 1);
     CHECK(up.offer(lora::Command{1, 0, 0}) == Uplink::Offer::Failed);
+}
+
+TEST_CASE("Uplink: period statistics and reset", "[uplink]") {
+    LinkSession link;  // closed: echoes need no link
+    Uplink up(link);
+    const auto t0 = Clock::now();
+    const wirelink::Frame hb = frame_of(lora::Heartbeat{});
+    for (int ms : {0, 100, 200, 310, 400, 403}) up.on_frame(RxFrame{t0 + std::chrono::milliseconds(ms), hb});
+
+    Uplink::Status st = up.status();
+    CHECK(st.slots == 6);
+    CHECK(st.heartbeats == 6);
+    REQUIRE(std::isfinite(st.period_min_s));
+    CHECK(std::fabs(st.period_min_s - 0.003) < 1e-6);  // back-to-back slots show up here...
+    CHECK(std::fabs(st.period_max_s - 0.110) < 1e-6);
+    CHECK(st.slot_period_s > 0.09);  // ...but not in the smoothed period
+    CHECK(st.slot_period_s < 0.11);
+
+    up.reset_stats();
+    st = up.status();
+    CHECK(st.slots == 0);
+    CHECK(st.heartbeats == 0);
+    CHECK(std::isnan(st.slot_period_s));
+    CHECK(std::isnan(st.period_min_s));
+    CHECK_FALSE(st.echoes_seen());
 }

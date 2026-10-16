@@ -148,12 +148,22 @@ void App::draw_link() {
         kv_u64("Land slots", us.slots);
         kv_row("Period");
         if (std::isfinite(us.slot_period_s))
-            ImGui::Text("%.0f ms", us.slot_period_s * 1000.0);
+            ImGui::Text("%.1f ms", us.slot_period_s * 1000.0);
         else
             ImGui::TextDisabled("-");
+        kv_row("Period min / max");
+        if (std::isfinite(us.period_min_s))
+            ImGui::Text("%.1f / %.1f ms", us.period_min_s * 1000.0, us.period_max_s * 1000.0);
+        else
+            ImGui::TextDisabled("-");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+            ImGui::SetTooltip("Over the last %zu echoes", Uplink::PERIOD_WINDOW);
         kv_row("Last slot");
         const double age = std::chrono::duration<double>(now - us.last_slot).count();
-        ImGui::TextColored(age_color(age), "%s ago", format_duration(age).c_str());
+        if (age < 1.0)
+            ImGui::TextColored(age_color(age), "%.0f ms ago", age * 1000.0);
+        else
+            ImGui::TextColored(age_color(age), "%s ago", format_duration(age).c_str());
         kv_u64("Heartbeat (idle)", us.heartbeats);
         kv_u64("Commands on air", us.commands_on_air);
         kv_u64("Disable/Reenable/SetMode on air", us.oneshots_on_air);

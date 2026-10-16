@@ -146,6 +146,11 @@ void FleetModel::clear() {
     last_boat_frame_sender_.reset();
 }
 
+void FleetModel::reset_counters() {
+    counters_ = {};
+    last_boat_frame_sender_.reset();
+}
+
 BoatState& FleetModel::boat(uint8_t id, Clock::time_point t) {
     auto it = boats_.find(id);
     if (it != boats_.end()) return it->second;

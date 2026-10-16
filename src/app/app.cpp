@@ -366,6 +366,9 @@ bool App::connect(const std::string& path, uint32_t baud, bool user_initiated) {
         return false;
     }
 
+    // Counters describe this connection, like LinkSession::stats().
+    uplink_.reset_stats();
+    fleet_.reset_counters();
     want_connected_ = true;
     conn_path_ = path;
     conn_baud_ = baud;
