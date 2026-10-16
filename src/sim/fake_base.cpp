@@ -2,14 +2,19 @@
 // boats, on a pseudo-terminal, so the UI and tests run without hardware.
 //
 // Radio model: the fleet's TDMA plan. One cycle (default 10 Hz) is split
-// into one slot per boat plus one land slot (3 boats: 4 slots of 25 ms).
-// Each boat broadcasts one SelfStatus in its slot every cycle, which the base
-// station relays to the PC (+ RxInfo). In the land slot the base station
-// transmits exactly ONE frame, chosen from what the PC sent since: Disable >
-// Reenable / SetMode > the latest Command > Heartbeat when there is nothing
-// else. Every boat listens to the land slot and takes its uplink quality
-// (SelfStatus gs_rssi / gs_snr) from the last land frame it heard. The base
-// station never relays its own transmissions back to the PC.
+// into one slot per id: the land slot (GROUND_STATION_ID 0) first, then one
+// per boat (3 boats: 4 slots of TRANSMIT_INTERVAL = 25 ms). Each boat
+// broadcasts one SelfStatus in its slot every cycle, which the base station
+// relays to the PC (+ RxInfo). Every boat listens to the land slot and takes
+// its uplink quality (SelfStatus gs_rssi / gs_snr) from the last land frame
+// it heard.
+//
+// The base station is the agreed minimal firmware (WIRELINK_CHANGES.md §3):
+// it keeps ONE "next land frame", the latest the PC sent (any LoRa land
+// type, unchanged, with the PC's seq). In its slot it transmits that frame,
+// or a Heartbeat of its own when it has none, empties the mailbox and writes
+// the transmitted packet back to the PC (the echo). All priority decisions
+// are the PC's (basestation::Uplink).
 //
 // Deliberately independent of basestation_core: incoming bytes are parsed
 // with upstream wirelink::Link and messages are encoded with upstream
@@ -21,6 +26,7 @@
 #include <basestation/proto/names.h>
 
 #include <boat_defs/ids.h>
+#include <boat_defs/lora.h>
 #include <boat_defs/mode.h>
 #include <boat_defs/units.h>
 
@@ -37,7 +43,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
 #include <optional>
 #include <random>
 #include <string>
@@ -77,11 +82,13 @@ struct Options {
     bool seed_set = false;
     double loss = 0.05;
     double corrupt = 0.002;
-    double rate_hz = 10.0;     // TDMA cycles per second
+    // TDMA cycles per second: one TRANSMIT_INTERVAL per id.
+    double rate_hz = 1e6 / (boat::ids::NUM_IDS * boat::lora::config::TRANSMIT_INTERVAL);
     sim::Origin origin;
     std::string link;
     bool quiet = false;
     bool rxinfo = true;
+    bool echo = true;          // --no-echo: firmware that does not echo land frames
     bool basestatus = true;
     bool base_gps = false;     // --base-gps
     bool start_auto = false;   // --start-mode auto
@@ -95,21 +102,22 @@ void usage(std::FILE* out) {
         "Simulates the base-station ESP32 and a boat fleet on a pseudo-terminal.\n"
         "The first line on stdout is 'PORT <path>': open that path in the UI.\n"
         "\n"
-        "Radio: the fleet's TDMA. Every cycle each boat sends one SelfStatus in its\n"
-        "slot; in the last slot the base station transmits ONE frame from what the\n"
-        "PC sent: Disable > Reenable/SetMode > latest Command > Heartbeat if idle.\n"
+        "Radio: the fleet's TDMA. Every cycle the base station transmits in the first\n"
+        "slot the latest frame the PC sent (or a Heartbeat if none) and echoes it to\n"
+        "the PC; then each boat sends one SelfStatus in its slot.\n"
         "\n"
         "  --boats N        number of boats, ids 1..N (default 3, max %d)\n"
         "  --seed S         RNG seed (default: random)\n"
         "  --loss P         probability a LoRa packet is lost, each way (default 0.05)\n"
         "  --corrupt P      probability a relayed frame gets a flipped byte (default 0.002)\n"
-        "  --rate HZ        TDMA cycle rate (default 10): each cycle has one slot per\n"
-        "                   boat (one SelfStatus each) and one land slot (one frame)\n"
+        "  --rate HZ        TDMA cycle rate (default 10): each cycle has one land slot\n"
+        "                   (one frame) and one slot per boat (one SelfStatus each)\n"
         "  --lat DEG        origin latitude  (default 42.3160, Jamaica Pond)\n"
         "  --lon DEG        origin longitude (default -71.1205)\n"
         "  --link PATH      also create a symlink PATH -> pty (removed on exit)\n"
         "  --quiet          do not print the land frames the base station transmits\n"
         "  --no-rxinfo      do not send base::RxInfo after relayed frames\n"
+        "  --no-echo        do not echo transmitted land frames to the PC\n"
         "  --no-basestatus  do not send base::BaseStatus\n"
         "  --base-gps       send base::BasePosition at 1 Hz, as if the base ESP32 had a\n"
         "                   GPS: no fix for the first second, then the origin +- ~1 m\n"
@@ -152,6 +160,8 @@ int parse_args(int argc, char** argv, Options& o) {
             o.quiet = true;
         } else if (a == "--no-rxinfo") {
             o.rxinfo = false;
+        } else if (a == "--no-echo") {
+            o.echo = false;
         } else if (a == "--no-basestatus") {
             o.basestatus = false;
         } else if (a == "--base-gps") {
@@ -239,10 +249,6 @@ public:
     }
 
 private:
-    // Frames the PC sent that wait for a land slot, per priority class. A
-    // burst longer than this drops the oldest (the PC never sends one).
-    static constexpr size_t MAX_PENDING = 8;
-
     void tick(double now) {
         now_ = now;
         // Boat motion (and the fault schedule) runs on scaled "world" time;
@@ -251,13 +257,14 @@ private:
         world_.step(world_now_);
         world_.maybe_toggle_fault(world_now_);
 
-        // TDMA: slots 0..N-1 belong to the boats, slot N to the base station.
+        // TDMA: slot 0 is the base station's (GROUND_STATION_ID), slots
+        // 1..N the boats'.
         const double cycle = 1.0 / opt_.rate_hz;
         const size_t slots = world_.boats().size() + 1;
         const double slot_len = cycle / static_cast<double>(slots);
         while (now >= next_slot_s_) {
-            if (slot_ < world_.boats().size()) send_self_status(world_.boats()[slot_]);
-            else land_slot();
+            if (slot_ == 0) land_slot();
+            else send_self_status(world_.boats()[slot_ - 1]);
             slot_ = (slot_ + 1) % slots;
             next_slot_s_ += slot_len;
             if (now - next_slot_s_ > cycle) next_slot_s_ = now;  // stalled: resync, do not burst
@@ -380,50 +387,30 @@ private:
         }
     }
 
-    static void push_bounded(std::deque<wirelink::Frame>& q, const wirelink::Frame& f) {
-        q.push_back(f);
-        while (q.size() > MAX_PENDING) q.pop_front();
-    }
-
-    // PC -> base station: queued for the next land slot, unchanged (the PC's
-    // seq goes out over the air).
+    // PC -> base station: the latest land frame replaces whatever the
+    // mailbox held, unchanged (the PC's seq goes out over the air).
     void handle_pc_frame(const wirelink::Frame& f) {
-        if (base::is_local_type(f.type)) {
-            log_rx("RX local type=0x%02x len=%u (ignored)\n", unsigned(f.type), unsigned(f.len));
+        if (base::is_local_type(f.type) || f.type == static_cast<uint8_t>(lora::MsgType::SelfStatus) ||
+            f.len > lora::MAX_LORA_PAYLOAD - 5) {
+            log_rx("RX type=0x%02x len=%u seq=%u (not a land frame, ignored)\n", unsigned(f.type),
+                   unsigned(f.len), unsigned(f.seq));
             return;
         }
-        switch (static_cast<lora::MsgType>(f.type)) {
-            case lora::MsgType::Disable: push_bounded(pending_disable_, f); return;
-            case lora::MsgType::Reenable:
-            case lora::MsgType::SetMode: push_bounded(pending_control_, f); return;
-            case lora::MsgType::Command: pending_command_ = f; return;  // latest only
-            case lora::MsgType::Heartbeat:
-                log_rx("RX Heartbeat (ignored: the base station sends its own when idle)\n");
-                return;
-            default:
-                log_rx("RX type=%u len=%u seq=%u (not a land->boat message, ignored)\n",
-                       unsigned(f.type), unsigned(f.len), unsigned(f.seq));
-                return;
-        }
+        mailbox_ = f;
     }
 
-    // The base station's slot: exactly one frame, by priority.
+    // The base station's slot: the mailbox, else a Heartbeat; then the echo.
     void land_slot() {
         wirelink::Frame f{};
-        if (!pending_disable_.empty()) {
-            f = pending_disable_.front();
-            pending_disable_.pop_front();
-        } else if (!pending_control_.empty()) {
-            f = pending_control_.front();
-            pending_control_.pop_front();
-        } else if (pending_command_) {
-            f = *pending_command_;
-            pending_command_.reset();
+        if (mailbox_) {
+            f = *mailbox_;
+            mailbox_.reset();
         } else {
             if (!codec::pack(lora::Heartbeat{}, f)) return;
             f.seq = heartbeat_seq_++;
         }
         ++tx_count_;
+        if (opt_.echo) write_frame(f, f.seq, false);
         transmit_land(f);
     }
 
@@ -484,7 +471,7 @@ private:
                        target(m.rx_id).c_str(), int(m.lin_vel), int(m.ang_vel), unsigned(f.seq), ids.c_str());
                 return;
             }
-            default: return;  // not queued
+            default: return;  // not a land type; handle_pc_frame refuses those
         }
         log_rx("TX type=%u len=%u seq=%u (payload did not decode, boats ignore it)\n", unsigned(f.type),
                unsigned(f.len), unsigned(f.seq));
@@ -532,10 +519,8 @@ private:
     size_t slot_ = 0;
     double next_slot_s_ = 0.05;
 
-    // What the PC sent since the last land slot.
-    std::deque<wirelink::Frame> pending_disable_;
-    std::deque<wirelink::Frame> pending_control_;  // Reenable / SetMode, in order
-    std::optional<wirelink::Frame> pending_command_;
+    // The next land frame: the latest the PC sent.
+    std::optional<wirelink::Frame> mailbox_;
     uint8_t heartbeat_seq_ = 0;  // the base station's own Heartbeats
 };
 

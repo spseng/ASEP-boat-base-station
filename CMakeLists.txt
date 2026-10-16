@@ -64,6 +64,7 @@ add_library(basestation_core STATIC
   src/core/src/teleop.cpp
   src/core/src/teleop_sender.cpp
   src/core/src/commander.cpp
+  src/core/src/uplink.cpp
   src/core/src/map_tiles.cpp
   src/core/src/http_client.cpp
   src/core/src/tile_service.cpp

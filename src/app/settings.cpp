@@ -111,7 +111,6 @@ std::string settings_to_string(const Settings& s) {
     o << "teleop.input_stale_ms = " << t.input_stale_ms << "\n";
     o << "teleop.stop_burst = " << t.stop_burst << "\n";
     o << "commander.disable_repeats = " << s.disable_repeats << "\n";
-    o << "commander.repeat_interval_ms = " << s.repeat_interval_ms << "\n";
     o << "view.plot_window_s = " << fmt_float(s.plot_window_s) << "\n";
     o << "view.text_scale = " << fmt_float(s.text_scale) << "\n";
     o << "view.show_fleet = " << (s.show_fleet ? 1 : 0) << "\n";
@@ -196,7 +195,6 @@ bool load_settings(const std::string& path, Settings& s) {
     get_int("teleop.stop_burst", 0, 20, t.stop_burst);
 
     get_int("commander.disable_repeats", 1, 20, s.disable_repeats);
-    get_int("commander.repeat_interval_ms", 10, 2000, s.repeat_interval_ms);
 
     get_float("view.plot_window_s", 30.0f, 900.0f, s.plot_window_s);
     get_float("view.text_scale", 0.6f, 2.5f, s.text_scale);

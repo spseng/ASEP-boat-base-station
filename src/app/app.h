@@ -117,13 +117,15 @@ private:
     Clock::time_point settings_dirty_since_{};
     Fonts fonts_;
 
-    // ---- core objects. Declaration order = construction order; the sender
-    // and commander hold a reference to link_, so they are declared after it
-    // and therefore destroyed before it (teleop's stop burst still goes out).
+    // ---- core objects. Declaration order = construction order; uplink_
+    // holds a reference to link_, teleop_ and commander_ to uplink_, so each
+    // is declared after what it uses and destroyed before it (teleop's last
+    // zero command still goes out).
     EventLog events_;
     FrameLogWriter frame_log_;
     LinkSession link_;
     FleetModel fleet_;
+    Uplink uplink_;
     TeleopSender teleop_;
     Commander commander_;
     Gamepad gamepad_;

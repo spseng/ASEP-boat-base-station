@@ -1,41 +1,37 @@
 #pragma once
 
-// One-shot operator commands (Disable, Reenable, SetMode).
+// One-shot operator commands (Disable, Reenable, SetMode), queued on the
+// Uplink, which hands them to the base-station ESP32 one land slot at a time.
 //
-// Disable is safety-critical and LoRa is lossy, so it is sent immediately
-// and then repeated `disable_repeats - 1` more times, `repeat_interval`
-// apart, from a background thread (Disable is idempotent on the boat).
-// Reenable and SetMode are sent once: repeating a mode change could
-// re-apply it after the operator has already issued another.
+// Disable is safety-critical and LoRa is lossy, so it goes out in
+// `disable_repeats` land slots (Disable is idempotent on the boat).
+// Reenable and SetMode go out once: repeating a mode change could re-apply
+// it after the operator has already issued another.
 
-#include <basestation/core/link_session.h>
+#include <basestation/core/uplink.h>
 
 #include <boat_defs/mode.h>
 
-#include <chrono>
-#include <condition_variable>
 #include <mutex>
-#include <thread>
-#include <vector>
+#include <string>
 
 namespace basestation {
 
 class Commander {
 public:
     struct Config {
-        int disable_repeats = 3;
-        std::chrono::milliseconds repeat_interval{100};
+        int disable_repeats = 3;  // land slots carrying each Disable
     };
 
-    explicit Commander(LinkSession& link, EventLog* events = nullptr);
-    ~Commander();
+    explicit Commander(Uplink& uplink, EventLog* events = nullptr);
     Commander(const Commander&) = delete;
     Commander& operator=(const Commander&) = delete;
 
     void set_config(const Config& cfg);
     Config config() const;
 
-    // Each returns false if the first transmission failed (link closed).
+    // Each returns false if the link is closed (the command stays queued
+    // briefly in case it comes back, see Uplink::Config::max_age).
     bool disable(uint8_t rx_id);
     bool reenable(uint8_t rx_id);
     bool set_mode(uint8_t rx_id, boat::mode::Mode mode, boat::mode::ArmedState armed);
@@ -44,21 +40,10 @@ public:
     static std::string target_name(uint8_t rx_id);
 
 private:
-    struct Pending {
-        Clock::time_point due;
-        uint8_t rx_id;
-        int remaining;
-    };
-    void loop();
-
-    LinkSession& link_;
+    Uplink& uplink_;
     EventLog* events_;
     mutable std::mutex mutex_;
-    std::condition_variable cv_;
     Config cfg_{};
-    std::vector<Pending> pending_;
-    bool quit_ = false;
-    std::thread thread_;
 };
 
 }  // namespace basestation

@@ -206,7 +206,7 @@ TEST_CASE("FleetModel: RxInfo attaches only directly after a boat frame", "[mode
     CHECK(b.rx_info->rssi == -90.0f);
     CHECK(b.rx_rssi_history.size() == 2);
     CHECK(m.counters().orphan_rx_info == 4);
-    CHECK(m.counters().land_frames == 1);
+    CHECK(m.counters().land_echoes == 1);
 }
 
 TEST_CASE("FleetModel: SelfStatus transitions produce events", "[model][fleet]") {
@@ -337,7 +337,7 @@ TEST_CASE("FleetModel: land->boat frames are counted, not attributed", "[model][
     m.ingest(make_rx(lora::Heartbeat{}));
     m.ingest(make_rx(lora::Reenable{1}));
     m.ingest(make_rx(lora::SetMode{1, 1, 1}));
-    CHECK(m.counters().land_frames == 5);
+    CHECK(m.counters().land_echoes == 5);
     CHECK(m.counters().unknown_types == 0);
     CHECK(m.boats().empty());
 }

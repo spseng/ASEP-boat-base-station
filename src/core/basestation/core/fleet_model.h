@@ -126,7 +126,7 @@ public:
         uint64_t frames = 0;
         uint64_t decode_errors = 0;   // known type, payload failed to unpack
         uint64_t unknown_types = 0;   // type not in lora:: or base::
-        uint64_t land_frames = 0;     // land types heard (another station, or echo)
+        uint64_t land_echoes = 0;     // land types: the base station echoing its own land slot
         uint64_t orphan_rx_info = 0;  // RxInfo not directly after a boat frame
         uint64_t invalid_ids = 0;     // boat id outside BOAT_ID_MIN..MAX
     };

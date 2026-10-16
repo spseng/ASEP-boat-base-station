@@ -271,7 +271,7 @@ void FleetModel::ingest(const RxFrame& rx) {
     case lora::MsgType::Heartbeat:
     case lora::MsgType::Reenable:
     case lora::MsgType::SetMode:
-        ++counters_.land_frames;
+        ++counters_.land_echoes;
         return;
 
     case lora::MsgType::SelfStatus: {

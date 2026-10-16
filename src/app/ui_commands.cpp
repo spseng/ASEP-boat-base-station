@@ -86,7 +86,7 @@ void App::draw_commands() {
     if (red_button("DISABLE", ImVec2(half, em * 2.0f))) commander_.disable(cmd_target_);
     ImGui::PopFont();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Trip the output gate of %s now (sent %d times)", target_text(cmd_target_).c_str(),
+        ImGui::SetTooltip("Trip the output gate of %s now (in %d land slots)", target_text(cmd_target_).c_str(),
                           settings_.disable_repeats);
     ImGui::SameLine();
     if (ImGui::Button("Re-enable...", ImVec2(half, em * 2.0f))) {

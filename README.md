@@ -96,8 +96,9 @@ On Ubuntu it is `/dev/ttyUSB*` or `/dev/ttyACM*`. The default baud rate is
 `asep_fake_base` pretends to be the base-station ESP32 plus a fleet of boats,
 on a pseudo-terminal. It runs the fleet's TDMA schedule (see
 [Radio and TDMA](#radio-and-tdma)): every boat sends a SelfStatus each
-cycle, and the simulated base ESP32 transmits one land frame per cycle,
-picked from what the app sent. The boats answer Command, Disable, Re-enable
+cycle, and the simulated base ESP32 behaves exactly like the agreed
+firmware: it transmits the latest frame the app sent (or a Heartbeat) in the
+land slot and echoes it back. The boats answer Command, Disable, Re-enable
 and SetMode; there is packet loss and the occasional corrupted byte, and a
 simulated GPS fault comes and goes.
 
@@ -109,7 +110,8 @@ simulated GPS fault comes and goes.
 `--link /tmp/asep-sim` also creates a stable symlink to the port.
 `--start-mode auto` starts the boats wandering. `--base-gps` makes the base
 station report a GPS position (see below). `--help` lists every option
-(boat count, loss, corruption, TDMA cycle rate, origin). Without `--quiet`
+(boat count, loss, corruption, TDMA cycle rate, origin). `--no-echo`
+behaves like firmware that does not echo its land frames. Without `--quiet`
 it prints each land frame it transmits and which boats heard it.
 
 ### Session logs
@@ -231,14 +233,17 @@ panel):
 How it behaves:
 
 - **Enabling:** teleop is off until you tick *Teleop enabled* and pick a
-  target boat. While it's on, the app sends a `Command` 10 times a second.
-  The base ESP32 transmits the latest one in each land slot (see
-  [Radio and TDMA](#radio-and-tdma)).
+  target boat. While it's on, the app refreshes the base ESP32's `Command`
+  20 times a second; the ESP32 transmits the newest one in each land slot,
+  so one Command per 100 ms cycle goes on air (see
+  [Radio and TDMA](#radio-and-tdma)). While a Disable, Re-enable or Set mode
+  is waiting for its slot, Commands are held back so they cannot replace it.
 - **When it sends zero:** releasing RB, unplugging the controller, or a UI
   that stops updating (input older than 250 ms) all send zero velocity.
   Commands keep flowing either way, so the boat sees the zero.
-- **Switching off:** turning teleop off, changing target, or quitting the
-  app first sends a short burst of zero commands to the old target.
+- **Switching off:** turning teleop off or changing target first sends zero
+  commands to the old target for 3 TDMA cycles; quitting the app leaves a
+  zero command with the base ESP32.
 - **Background input:** the controller keeps working when the app window is
   not focused. The deadman button still applies.
 - **The boat must accept it:** a boat acts on `Command` only in MANUAL mode,
@@ -246,9 +251,9 @@ How it behaves:
   SelfStatus says it will ignore you.
 
 **Disable** (toolbar *DISABLE ALL*, per-boat *DISABLE*, or B on the
-controller) is sent three times, 100 ms apart, because LoRa loses packets.
-Each copy goes out in its own land slot, ahead of anything else. A
-Re-enable sent afterwards cancels any repeats still queued for that boat.
+controller) goes out in three consecutive land slots, because LoRa loses
+packets, ahead of any queued Re-enable / Set mode. A Re-enable sent
+afterwards cancels the copies still owed to that boat.
 Software disable complements the hardware E-stop and battery disconnect;
 it does not replace them.
 
@@ -266,7 +271,7 @@ lost packets per boat and per message type from them.
 | 0 | `Disable {rx_id}` | land → boat | upstream `wirelink/msg/lora.h` |
 | 1 | `SelfStatus {PeerEntry self, heading_deg, state, faults, gs_rssi, gs_snr}` | boat → all, every TDMA cycle | 〃 |
 | 2 | `Command {rx_id, lin_vel mm/s, ang_vel mrad/s}` | land → boat | 〃 |
-| 3 | `Heartbeat {}` | land → all, when the land slot has nothing else | 〃 |
+| 3 | `Heartbeat {}` | land → all, when the land slot has nothing else (the base ESP32's own) | 〃 |
 | 4 | `Reenable {rx_id}` | land → boat | 〃 |
 | 5 | `SetMode {rx_id, mode, armed}` | land → boat | 〃 |
 | 0x80 | `RxInfo {rssi, snr}` | base ESP32 → PC | upstream `wirelink/msg/base.h` |
@@ -298,18 +303,23 @@ and one for the land station.
 
 - Each boat transmits **one SelfStatus in its slot every cycle**. The same
   packet serves its peers and the land station.
-- The base ESP32 transmits **exactly one frame in the land slot**, chosen
-  from what the app sent since the previous land slot: **Disable** first,
-  then **Reenable / SetMode** (in order), then the **latest Command** (older
-  ones are replaced), and a **Heartbeat** when there is nothing else. Every
-  boat hears the land slot, so `gs_rssi` / `gs_snr` stay fresh even without
-  commands.
-- The app keeps sending what it always sent (Commands at the teleop rate,
-  Disable three times, Reenable / SetMode once). Slot selection is the base
-  ESP32's job; the app never sends Heartbeat.
-- The base ESP32 relays every boat frame it receives (plus RxInfo) but not
-  its own transmissions. `BaseStatus.tx_count` counts land frames sent, so it
-  grows by about 10 per second.
+- The base ESP32 is a **mailbox**: it keeps only the latest land frame the
+  app sent and transmits it in the land slot (slot 0, `GROUND_STATION_ID`),
+  or a **Heartbeat** of its own when it has none. Every boat hears the land
+  slot, so `gs_rssi` / `gs_snr` stay fresh even without commands. Boats only
+  start transmitting once they have heard something, so the base ESP32
+  transmits in its slot from power-up.
+- After each land transmission it writes the packet back to the app: the
+  **echo**. It also relays every boat frame it receives unchanged, followed
+  by RxInfo.
+- **The app decides what each slot carries** (`src/core/src/uplink.cpp`):
+  Disable / Reenable / SetMode are handed over one at a time and handed
+  again after each slot whose echo shows something else, until their own
+  echo comes back (a Disable needs three); a Disable goes ahead of the rest.
+  While any is waiting, Commands are held back. Otherwise the latest Command
+  is refreshed at the teleop rate. Without echoes (older firmware) each copy
+  counts as unconfirmed after 250 ms, so commands still go out, paced by
+  that timeout. The Link panel shows the echoes (*Land slot*).
 
 ---
 
@@ -319,7 +329,8 @@ and one for the land station.
 src/proto/   aliases for the upstream messages (msgs.h), display names
              (header-only; LoRa messages and codec are upstream's)
 src/core/    everything that is not GUI: serial port, frame splitting,
-             link session, session log, fleet model, teleop, commands,
+             link session, session log, fleet model, uplink (what the
+             land slot carries), teleop, commands,
              map tiles (tile math, cache, downloader)
 src/app/     the SDL3 + Dear ImGui + ImPlot application
 src/sim/     asep_fake_base simulator, asep_log_dump

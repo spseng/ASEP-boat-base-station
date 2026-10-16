@@ -11,6 +11,7 @@
 #include <basestation/core/frame_splitter.h>
 #include <basestation/core/msg_catalog.h>
 #include <basestation/core/serial_port.h>
+#include <basestation/core/uplink.h>
 
 #include <boat_defs/lora.h>
 #include <boat_defs/serial.h>
@@ -65,7 +66,9 @@ void usage(std::FILE* out) {
         "\n"
         "  --proto lora|serial  message set (default lora):\n"
         "                         lora    the base-station ESP32's USB link: LoRa\n"
-        "                                 messages (types 0-5) + base-local (0x80+)\n"
+        "                                 messages (types 0-5) + base-local (0x80+);\n"
+        "                                 land types (all but SelfStatus) are the\n"
+        "                                 ESP32 echoing its land slot, marked TX\n"
         "                         serial  a boat's Pi <-> ESP32 link (types 1-10)\n"
         "                       The two sets reuse type numbers (3 is Heartbeat on\n"
         "                       lora, PeerTable on serial), so pick the one for the link.\n"
@@ -287,8 +290,9 @@ int run_echo(const Options& opt) {
         for (const auto& f : frames) {
             if (!opt.types.empty() && !opt.types.count(f.type)) continue;
             const Decoded d = catalog::decode(opt.proto, f);
-            std::printf("%s  %-16s seq=%-3u  %s%s\n", clock_text().c_str(), d.name.c_str(), unsigned(f.seq),
-                        fields_text(d).c_str(), problems_text(d).c_str());
+            const bool tx = opt.proto == Proto::Lora && is_land_type(f.type);
+            std::printf("%s  %-3s%-16s seq=%-3u  %s%s\n", clock_text().c_str(), tx ? "TX" : "", d.name.c_str(),
+                        unsigned(f.seq), fields_text(d).c_str(), problems_text(d).c_str());
         }
     }
     return 0;

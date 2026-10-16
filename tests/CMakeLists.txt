@@ -7,6 +7,7 @@ add_executable(basestation_tests
   test_geo.cpp
   test_teleop.cpp
   test_commander.cpp
+  test_uplink.cpp
   test_sim_integration.cpp
   test_map_tiles.cpp
   test_tile_service.cpp
