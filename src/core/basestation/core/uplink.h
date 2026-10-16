@@ -56,6 +56,8 @@ public:
         uint64_t oneshots_on_air = 0; // ... of which one of our one-shot frames
         Clock::time_point last_slot{};
         double slot_period_s = NAN;   // smoothed time between echoes
+        double period_min_s = NAN;    // shortest / longest time between echoes
+        double period_max_s = NAN;    // over the last PERIOD_WINDOW of them
         size_t queued = 0;            // one-shot frames not finished yet
         uint64_t unconfirmed = 0;     // copies given up on without an echo
         uint64_t dropped = 0;         // frames dropped after max_age
@@ -63,6 +65,8 @@ public:
 
         bool echoes_seen() const { return slots > 0; }
     };
+
+    static constexpr size_t PERIOD_WINDOW = 50;  // ~5 s at 10 Hz
 
     enum class Offer { Sent, Held, Failed };
 
@@ -99,6 +103,8 @@ public:
     void on_frame(const RxFrame& rx);
 
     Status status() const;
+    // Zeroes the Status counters (on a new connection); keeps the queue.
+    void reset_stats();
 
 private:
     struct Item {
@@ -125,6 +131,7 @@ private:
     std::condition_variable cv_;
     Config cfg_{};
     Status status_{};
+    std::deque<double> periods_;  // last PERIOD_WINDOW times between echoes, s
     std::deque<Item> queue_;
     bool quit_ = false;
     std::thread thread_;

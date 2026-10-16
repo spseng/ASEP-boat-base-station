@@ -304,6 +304,12 @@ TEST_CASE("FleetModel: invalid boat ids are ignored", "[model][fleet]") {
     CHECK(m.counters().invalid_ids == 3);
     CHECK(m.counters().orphan_rx_info == 1);
     CHECK(m.counters().frames == 4);
+
+    // A new connection starts the counters over.
+    m.reset_counters();
+    CHECK(m.counters().frames == 0);
+    CHECK(m.counters().invalid_ids == 0);
+    CHECK(m.counters().orphan_rx_info == 0);
 }
 
 TEST_CASE("FleetModel: unknown types and decode errors are counted", "[model][fleet]") {

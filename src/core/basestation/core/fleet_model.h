@@ -157,7 +157,8 @@ public:
         return std::chrono::duration<double>(t - t0_).count();
     }
 
-    void clear();  // forget everything (keeps t0 and limits)
+    void clear();           // forget everything (keeps t0 and limits)
+    void reset_counters();  // zero counters() only (on a new connection)
 
 private:
     void attach_rx_info(const RxFrame& rx, const base::RxInfo& info);

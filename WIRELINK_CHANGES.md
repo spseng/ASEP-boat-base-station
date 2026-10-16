@@ -5,16 +5,16 @@ This repository never modifies `ASEP-boat` (it is a read-only submodule under
 is listed here for you to apply upstream. Each item says what to change, why,
 and what the base station does in the meantime.
 
-Checked against ASEP-boat `4e07b3d` ("add mcu bridge msgs").
+Checked against ASEP-boat `a31bdf0` ("update echo for a more accurate usage").
 
 | § | Item | State |
 |---|---|---|
 | 1 | `wire.h`: `int16_t` and nested structs | **ADOPTED** in `7b59f1e` |
 | 2 | `msg/lora.h`: a meaningful LoRa message set | **ADOPTED** in `7b59f1e` (upstream's own version) |
-| 3 | Base-local messages (`>= 0x80`); what the base ESP32 (RadioGround) must do | **ADOPTED** in `2658776` (`wirelink/msg/base.h`); firmware behaviour **agreed**, still to implement |
+| 3 | Base-local messages (`>= 0x80`); what the base ESP32 (RadioGround) does | **ADOPTED** in `2658776` (`wirelink/msg/base.h`); firmware **implemented** in `8b47fec` / `a31bdf0` |
 | 4 | Adding modes | information |
 | 5 | Minor items | open |
-| 6 | Found in `firmware/lib/RadioBoat` (`4e07b3d`) | open |
+| 6 | Found in `firmware/lib/RadioBoat` / `RadioGround` | partly fixed |
 
 ---
 
@@ -102,46 +102,29 @@ All are optional; the UI still works if the ESP32 never sends them.
 Upstream `base.h` documents the `>= 0x80` rule; a one-line note in `lora.h`
 as well would stop a future LoRa type from being numbered into that range.
 
-**Behaviour the base station expects from `firmware/src/ground`
-(RadioGround): agreed design.** The ESP32 is a mailbox; every decision
-about what a land slot carries is made by the app (`src/core/src/uplink.cpp`),
-so RadioGround can stay a near copy of RadioBoat with `my_tx_id =
-GROUND_STATION_ID`:
+**What the base ESP32 does (RadioGround, `firmware/lib/RadioGround` +
+`GroundLink`, implemented in `8b47fec` / `a31bdf0`).** The ESP32 is a
+mailbox; every decision about what a land slot carries is made by the app
+(`src/core/src/uplink.cpp`), so RadioGround is a near copy of RadioBoat
+with `my_tx_id = GROUND_STATION_ID`:
 
-- **LoRa → USB:** write the received bytes to USB unchanged. They already
-  are a wirelink packet (`00 … 00`, the boat's own `seq`, which the app
-  uses to count loss). Then, optionally, `RxInfo {rssi, snr}`. Unwrapping
-  is only needed to learn the sender for the TDMA schedule, exactly as
-  RadioBoat does (`SelfStatus.self.id`).
-- **USB → mailbox:** keep **one** frame, the latest one the app sent. A new
-  one replaces it, whatever its type. No queues, no priorities. It is
-  sensible to accept only LoRa land types (0, 2, 3, 4, 5) that fit
-  `MAX_LORA_PAYLOAD`, and to ignore anything else.
-- **Land slot (id 0, same `schedule_next_transmit()` as RadioBoat):**
-  transmit the mailbox frame with the app's `seq` (`wrap(frame,
-  frame.seq)`) and empty the mailbox; if it is empty, transmit a
-  `Heartbeat` of its own. **Then write the transmitted packet to USB as
-  well: the echo.** That is how the app learns that the slot happened and
-  what went out. Emptying the mailbox matters: if the app stops, Commands
-  stop, and the boat's command timeout stops the boat.
+- **LoRa → USB:** the received bytes go to USB unchanged. They already are
+  a wirelink packet (`00 … 00`, with the boat's own `seq`). `RxInfo` after
+  it is optional and not sent yet. Unwrapping is only for the TDMA
+  schedule (`SelfStatus.self.id`).
+- **USB → mailbox:** one packet, the latest the app sent; a new one
+  replaces it, whatever its type.
+- **Land slot (id 0, same `schedule_next_transmit()` as RadioBoat):** the
+  mailbox packet, or a `Heartbeat` of its own when it is empty. After a
+  successful `transmit`, the same bytes go to USB: **the echo**, which also
+  empties the mailbox. If the app stops, Commands stop, and the boat's
+  command timeout stops the boat.
+- **`seq` on this path means nothing:** boats do not read it, and the app
+  matches echoes by type and payload. The ground ESP32 wraps with seq 0.
 - **Start-up:** boats transmit only after they have heard something
-  (`may_transmit`), so the ground ESP32 must transmit in its slot from
-  `begin()` on (e.g. `may_transmit = true; my_next_transmit_us = micros();`).
-  With no boat in range it then beacons every `NUM_IDS * TRANSMIT_INTERVAL`.
-
-In pseudo-code, the only differences from RadioBoat:
-
-```cpp
-// receive(): after RadioBoat's sender bookkeeping
-pcLink.write_raw(buf, len);           // relay unchanged
-pcLink.send(RxInfo{rssi, snr});       // optional
-
-// transmit():
-auto f = pcLink.take_next();          // the mailbox; empties it
-auto packet = f ? wrap(*f, f->seq) : wrap(heartbeat, hb_seq++);
-sx1262.startTransmit(packet->data.data(), packet->len);
-pcLink.write_raw(packet->data.data(), packet->len);   // the echo
-```
+  (`may_transmit`), so the ground ESP32 transmits in its slot from
+  `begin()` on. With no boat in range it beacons every `NUM_IDS *
+  TRANSMIT_INTERVAL`.
 
 What the app does on its side, for reference: Disable / Reenable / SetMode
 are handed over one at a time and again after every slot whose echo shows
@@ -219,31 +202,25 @@ the point to add a dedicated message instead of stretching `SetMode`.
 
 ---
 
-## 6. Found in `firmware/lib/RadioBoat` (`4e07b3d`)
+## 6. Found in `firmware/lib/RadioBoat` / `RadioGround`
 
-Read while designing §3; RadioGround will share most of this code.
+Read while designing §3.
 
-- **`ReceivedCommand.payload` reaches the Pi empty.** `framing::unwrap`
-  sets `Frame::len` but leaves `Frame::payload.len` at 0, so
-  `command.payload = frame->payload;` packs a zero-length payload: the Pi
-  gets the type of the Command / SetMode / Reenable but none of its fields.
-  Fix: `command.payload.len = frame->len;` after the copy (or have
-  `unwrap` set `payload.len`, see "Two lengths" in §5). `wl_mon --proto
-  serial` decodes the LoRa message inside a ReceivedCommand and flags an
-  empty one.
-- **`wrap(frame, 0)`: every SelfStatus has seq 0.** The app counts loss per
-  boat from `seq`; with a constant 0 every frame after the first looks like
-  a duplicate and the loss shows 0 %. Use a counter, e.g. `static uint8_t
-  seq; wrap(frame, seq++)`. (The Link panel marks a sender whose seq does
-  not advance.)
+- ~~`ReceivedCommand.payload` reached the Pi empty~~ (`unwrap` leaves
+  `Frame::payload.len` at 0). Fixed in `86e54c1`. `wl_mon --proto serial`
+  still decodes the LoRa message inside a ReceivedCommand and flags an empty
+  one.
+- ~~`RadioGround.h` defined `Radio::rx_flag` in the header~~. Fixed in
+  `8b47fec`.
+- **`wrap(frame, 0)`: every SelfStatus has seq 0 (optional).** `seq` is
+  only used by the app's per-boat loss figures; with a constant 0 every
+  frame after the first counts as a duplicate, so loss cannot be measured
+  (the Link panel marks such a sender). Nothing else depends on it. A
+  counter (`wrap(frame, seq++)`) brings the loss figures back.
 - **`heading_deg`, `gs_rssi`, `gs_snr` are sent as `0.0` while
   unimplemented.** The app reads NaN as "unknown" (§2). With 0.0 it shows a
   compass heading of north and a land link of 0 dBm. Send `NAN` until they
   are filled in.
-- **`RadioGround.h` defines `volatile bool Radio::rx_flag = false;` in the
-  header.** Once both `RadioGround.cpp` and `main.cpp` include it, the link
-  fails with a multiple definition. Keep the definition in the .cpp, as
-  RadioBoat does.
-- **`Disable` is still a TODO** in `receive()`. Until it is implemented the
-  app's DISABLE does nothing on a real boat; only the hardware E-stop does.
-
+- **`Disable` is still a TODO** in RadioBoat's `receive()`. Until it is
+  implemented the app's DISABLE does nothing on a real boat; only the
+  hardware E-stop does.

@@ -60,7 +60,18 @@ Uplink::Status Uplink::status() const {
     std::lock_guard<std::mutex> lock(mutex_);
     Status s = status_;
     s.queued = queue_.size();
+    if (!periods_.empty()) {
+        const auto [lo, hi] = std::minmax_element(periods_.begin(), periods_.end());
+        s.period_min_s = *lo;
+        s.period_max_s = *hi;
+    }
     return s;
+}
+
+void Uplink::reset_stats() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    status_ = Status{};
+    periods_.clear();
 }
 
 bool Uplink::push(const wirelink::Frame& f, int copies, const std::string& label) {
@@ -163,6 +174,12 @@ void Uplink::on_frame(const RxFrame& rx) {
         // An echo: the ESP32 has just transmitted its land slot.
         if (status_.slots > 0) {
             const double dt = std::chrono::duration<double>(rx.t - status_.last_slot).count();
+            // Short gaps too (back-to-back slots are worth seeing); long
+            // ones are the link pausing, not the schedule.
+            if (dt < 1.0) {
+                periods_.push_back(dt);
+                if (periods_.size() > PERIOD_WINDOW) periods_.pop_front();
+            }
             if (dt > 0.02 && dt < 1.0)
                 status_.slot_period_s = std::isnan(status_.slot_period_s) ? dt : 0.8 * status_.slot_period_s + 0.2 * dt;
         }
