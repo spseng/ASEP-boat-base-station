@@ -406,9 +406,8 @@ void App::draw_fleet_view() {
                                       ImVec2(base.x - perp.x * aw, base.y - perp.y * aw), col);
             }
 
-            // Position: filled dot; hollow when the boat's own fix is old.
-            const bool old_fix = b.self_status->self.age_ms > 3000;
-            if (old_fix) {
+            // Position: filled dot; hollow when the boat has gone quiet.
+            if (stale) {
                 dl->AddCircleFilled(p, 6.5f * s, IM_COL32(20, 22, 26, 230));
                 dl->AddCircle(p, 6.5f * s, col, 0, 2.0f * s);
             } else {
@@ -431,7 +430,6 @@ void App::draw_fleet_view() {
                 if (stale) line("stale", colors::warn);
                 if (b.state.is_tripped()) line("TRIPPED", colors::danger);
                 if (b.self_status->faults) line(names::fault_list(b.self_status->faults).c_str(), colors::warn);
-                if (old_fix) line("old fix", colors::warn);
             }
         }
         ImPlot::PopPlotClipRect();

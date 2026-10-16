@@ -210,9 +210,10 @@ void App::draw_boat_detail(const BoatState& b) {
             const geo::LatLon ll = geo::from_e7(self.lat, self.lon);
             row("Position");
             ImGui::Text("%.7f, %.7f", ll.lat_deg, ll.lon_deg);
-            row("Fix age");
-            ImGui::TextColored(self.age_ms > 3000 ? colors::warn : ImGui::GetStyleColorVec4(ImGuiCol_Text), "%u ms",
-                               unsigned(self.age_ms));
+            row("Report age");
+            const double age_s = std::chrono::duration<double>(now - b.self_status_time).count();
+            ImGui::TextColored(age_s > 3.0 ? colors::warn : ImGui::GetStyleColorVec4(ImGuiCol_Text), "%.1f s",
+                               age_s);
             row("Scalar");
             ImGui::Text("%.3f °C", static_cast<double>(self.scalar));
         }

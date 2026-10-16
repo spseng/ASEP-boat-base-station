@@ -214,41 +214,41 @@ TEST_CASE("FleetModel: SelfStatus transitions produce events", "[model][fleet]")
     EventLog log;
     FleetModel m(&log, T0);
 
-    m.ingest(make_rx(status_of(4, Mode::MANUAL, ArmedState::DISARMED, GateState::ENABLED)));
+    m.ingest(make_rx(status_of(3, Mode::MANUAL, ArmedState::DISARMED, GateState::ENABLED)));
     const auto base_events = log.snapshot().size();  // just "first heard"
     CHECK(base_events == 1);
 
-    m.ingest(make_rx(status_of(4, Mode::MANUAL, ArmedState::DISARMED, GateState::TRIPPED), 1));
-    CHECK(count_events(log, EventLevel::Warn, "Boat 4 gate TRIPPED") == 1);
+    m.ingest(make_rx(status_of(3, Mode::MANUAL, ArmedState::DISARMED, GateState::TRIPPED), 1));
+    CHECK(count_events(log, EventLevel::Warn, "Boat 3 gate TRIPPED") == 1);
 
-    m.ingest(make_rx(status_of(4, Mode::MANUAL, ArmedState::DISARMED, GateState::TRIPPED), 2));
+    m.ingest(make_rx(status_of(3, Mode::MANUAL, ArmedState::DISARMED, GateState::TRIPPED), 2));
     CHECK(count_events(log, EventLevel::Warn, "gate TRIPPED") == 1);  // no repeat
 
-    m.ingest(make_rx(status_of(4, Mode::MANUAL, ArmedState::DISARMED, GateState::ENABLED), 3));
-    CHECK(count_events(log, EventLevel::Info, "Boat 4 gate ENABLED") == 1);
+    m.ingest(make_rx(status_of(3, Mode::MANUAL, ArmedState::DISARMED, GateState::ENABLED), 3));
+    CHECK(count_events(log, EventLevel::Info, "Boat 3 gate ENABLED") == 1);
 
-    m.ingest(make_rx(status_of(4, Mode::AUTONOMOUS, ArmedState::ARMED, GateState::ENABLED), 4));
-    CHECK(count_events(log, EventLevel::Info, "Boat 4 mode MANUAL -> AUTONOMOUS") == 1);
-    CHECK(count_events(log, EventLevel::Info, "Boat 4 ARMED") == 1);
+    m.ingest(make_rx(status_of(3, Mode::AUTONOMOUS, ArmedState::ARMED, GateState::ENABLED), 4));
+    CHECK(count_events(log, EventLevel::Info, "Boat 3 mode MANUAL -> AUTONOMOUS") == 1);
+    CHECK(count_events(log, EventLevel::Info, "Boat 3 ARMED") == 1);
 
-    m.ingest(make_rx(status_of(4, Mode::RETURN_TO_HOME, ArmedState::DISARMED, GateState::ENABLED,
+    m.ingest(make_rx(status_of(3, Mode::RETURN_TO_HOME, ArmedState::DISARMED, GateState::ENABLED,
                                fault::GPS_FAILURE | fault::BATTERY_LOW),
                      5));
     CHECK(count_events(log, EventLevel::Info, "mode AUTONOMOUS -> RETURN_TO_HOME") == 1);
-    CHECK(count_events(log, EventLevel::Info, "Boat 4 DISARMED") == 1);
-    CHECK(count_events(log, EventLevel::Warn, "Boat 4 fault: GPS_FAILURE, BATTERY_LOW") == 1);
+    CHECK(count_events(log, EventLevel::Info, "Boat 3 DISARMED") == 1);
+    CHECK(count_events(log, EventLevel::Warn, "Boat 3 fault: GPS_FAILURE, BATTERY_LOW") == 1);
 
-    m.ingest(make_rx(status_of(4, Mode::RETURN_TO_HOME, ArmedState::DISARMED, GateState::ENABLED,
+    m.ingest(make_rx(status_of(3, Mode::RETURN_TO_HOME, ArmedState::DISARMED, GateState::ENABLED,
                                fault::BATTERY_LOW | fault::MOTOR_FAILURE),
                      6));
-    CHECK(count_events(log, EventLevel::Warn, "Boat 4 fault: MOTOR_FAILURE") == 1);
-    CHECK(count_events(log, EventLevel::Info, "Boat 4 fault cleared: GPS_FAILURE") == 1);
+    CHECK(count_events(log, EventLevel::Warn, "Boat 3 fault: MOTOR_FAILURE") == 1);
+    CHECK(count_events(log, EventLevel::Info, "Boat 3 fault cleared: GPS_FAILURE") == 1);
 
     // Nothing changed (only position, heading, link quality): no new events.
     const auto n = log.snapshot().size();
-    lora::SelfStatus same = status_of(4, Mode::RETURN_TO_HOME, ArmedState::DISARMED, GateState::ENABLED,
+    lora::SelfStatus same = status_of(3, Mode::RETURN_TO_HOME, ArmedState::DISARMED, GateState::ENABLED,
                                       fault::BATTERY_LOW | fault::MOTOR_FAILURE, 45.0f, -90.0f, 3.0f);
-    same.self = self_at(4, 10, 10).self;
+    same.self = self_at(3, 10, 10).self;
     m.ingest(make_rx(same, 7));
     CHECK(log.snapshot().size() == n);
 
@@ -256,18 +256,18 @@ TEST_CASE("FleetModel: SelfStatus transitions produce events", "[model][fleet]")
     lora::SelfStatus newer = same;
     newer.state = state::encode(uint8_t{9}, ArmedState::DISARMED, GateState::ENABLED);
     m.ingest(make_rx(newer, 8));
-    CHECK(count_events(log, EventLevel::Info, "Boat 4 mode RETURN_TO_HOME -> MODE 9") == 1);
-    CHECK(m.boats().at(4).state.mode == 9);
+    CHECK(count_events(log, EventLevel::Info, "Boat 3 mode RETURN_TO_HOME -> MODE 9") == 1);
+    CHECK(m.boats().at(3).state.mode == 9);
 }
 
 TEST_CASE("FleetModel: first SelfStatus reports a tripped gate and active faults", "[model][fleet]") {
     using namespace boat::mode;
     EventLog log;
     FleetModel m(&log, T0);
-    m.ingest(make_rx(status_of(5, Mode::EMERGENCY_STOP, ArmedState::DISARMED, GateState::TRIPPED,
+    m.ingest(make_rx(status_of(2, Mode::EMERGENCY_STOP, ArmedState::DISARMED, GateState::TRIPPED,
                                fault::SENSOR_FAILURE)));
-    CHECK(count_events(log, EventLevel::Warn, "Boat 5 gate TRIPPED") == 1);
-    CHECK(count_events(log, EventLevel::Warn, "Boat 5 fault: SENSOR_FAILURE") == 1);
+    CHECK(count_events(log, EventLevel::Warn, "Boat 2 gate TRIPPED") == 1);
+    CHECK(count_events(log, EventLevel::Warn, "Boat 2 fault: SENSOR_FAILURE") == 1);
     CHECK(count_events(log, EventLevel::Info, "mode") == 0);
 }
 
@@ -297,7 +297,7 @@ TEST_CASE("FleetModel: gs_rssi / gs_snr NaN means the boat has not heard land", 
 TEST_CASE("FleetModel: invalid boat ids are ignored", "[model][fleet]") {
     FleetModel m(nullptr, T0);
     m.ingest(make_rx(self_at(0)));
-    m.ingest(make_rx(self_at(11)));
+    m.ingest(make_rx(self_at(4)));  // BOAT_ID_MAX is 3
     m.ingest(make_rx(status_of(255)));
     m.ingest(make_rx(base::RxInfo{-50, 5}));  // must not attach to anything
     CHECK(m.boats().empty());

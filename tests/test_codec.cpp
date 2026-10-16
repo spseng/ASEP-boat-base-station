@@ -52,7 +52,7 @@ T round_trip(const T& msg) {
 }
 
 PeerEntry peer(uint8_t id) {
-    return PeerEntry{id, -337123456 - id, 1512345678 + id, 0.25f * id, 1000u * id};
+    return PeerEntry{id, -337123456 - id, 1512345678 + id, 0.25f * id};
 }
 
 lora::SelfStatus self_status(uint8_t id) {
@@ -74,7 +74,6 @@ TEST_CASE("lora messages round-trip", "[codec]") {
         CHECK(out.self.lat == -337123459);
         CHECK(out.self.lon == 1512345681);
         CHECK(out.self.scalar == 0.75f);
-        CHECK(out.self.age_ms == 3000u);
         CHECK(out.heading_deg == 271.5f);
         CHECK(out.state == 0x31);
         CHECK(out.faults == boat::mode::fault::GPS_FAILURE);
@@ -141,7 +140,7 @@ TEST_CASE("base-local messages round-trip", "[codec]") {
 
 TEST_CASE("wire sizes", "[codec]") {
     CHECK(wire_size(lora::Disable{}) == 1);
-    CHECK(wire_size(lora::SelfStatus{}) == 31);
+    CHECK(wire_size(lora::SelfStatus{}) == 27);
     CHECK(wire_size(lora::Command{}) == 5);
     CHECK(wire_size(lora::Heartbeat{}) == 0);
     CHECK(wire_size(lora::Reenable{}) == 1);
@@ -160,14 +159,14 @@ TEST_CASE("wire sizes", "[codec]") {
 TEST_CASE("fields are little-endian two's complement", "[codec]") {
     CHECK(encode(lora::Command{0x11, -2, 0x0102}) == std::vector<uint8_t>{0x11, 0xFE, 0xFF, 0x02, 0x01});
     lora::SelfStatus s{};
-    s.self = PeerEntry{1, -1, 2, 0.0f, 0};
+    s.self = PeerEntry{1, -1, 2, 0.0f};
     s.state = 0x25;
     s.faults = 0x81;
     const auto b = encode(s);
     CHECK(std::vector<uint8_t>(b.begin() + 1, b.begin() + 5) == std::vector<uint8_t>{0xFF, 0xFF, 0xFF, 0xFF});
-    // self (17 bytes), heading (4), then state and faults.
-    CHECK(b[21] == 0x25);
-    CHECK(b[22] == 0x81);
+    // self (13 bytes), heading (4), then state and faults.
+    CHECK(b[17] == 0x25);
+    CHECK(b[18] == 0x81);
 }
 
 TEST_CASE("unpack rejects mismatched frames", "[codec]") {

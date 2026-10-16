@@ -312,7 +312,6 @@ private:
         m.self.lat = g.lat;
         m.self.lon = g.lon;
         m.self.scalar = world_.scalar_at(b.north_m, b.east_m);
-        m.self.age_ms = static_cast<uint32_t>((world_now_ - b.fix_time_s) / opt_.time_scale * 1000.0);
         m.heading_deg = static_cast<float>(b.heading_deg);
         m.state = state::encode(static_cast<uint8_t>(b.mode), b.armed, b.gate);
         m.faults = b.faults;

@@ -58,7 +58,7 @@ void check_spec(Proto p) {
     CHECK(s->fields.size() == leaf_count<T>());
 }
 
-PeerEntry peer(uint8_t id) { return PeerEntry{id, 420000000, -710000000, 0.25f, 120}; }
+PeerEntry peer(uint8_t id) { return PeerEntry{id, 420000000, -710000000, 0.25f}; }
 
 ser::Attitude attitude(float x, float y, float z, float w) {
     return ser::Attitude{x, y, z, w, 0.01f, 0, 0, 0, 0, 9.81f, 0xFF};
@@ -96,19 +96,17 @@ TEST_CASE("every catalog spec matches its struct's leaf count", "[mon]") {
     check_spec<ser::OwnScalar>(Proto::Serial);
     check_spec<ser::Status>(Proto::Serial);
     check_spec<ser::MotorCommand>(Proto::Serial);
-    check_spec<ser::BroadcastPayload>(Proto::Serial);
+    check_spec<ser::BroadcastEntry>(Proto::Serial);
+    check_spec<ser::ReceivedCommand>(Proto::Serial);
     check_spec<ser::Config>(Proto::Serial);
     check_spec<ser::Heartbeat>(Proto::Serial);
-    // No fields upstream yet; once it gets some, give it a spec.
-    CHECK_FALSE(detail::has_fields<ser::ReceivedCommand, LeafCounter>::value);
-    CHECK(find(Proto::Serial, static_cast<uint8_t>(ser::ReceivedCommand::TYPE))->fields.empty());
     CHECK(messages(Proto::Serial).size() == 10);
 
     CHECK(find(Proto::Serial, "attitude") == find(Proto::Serial, uint8_t{1}));
     CHECK(find(Proto::Lora, "heartbeat") == find(Proto::Lora, uint8_t{3}));
     CHECK(find(Proto::Lora, "Status") == nullptr);  // folded into SelfStatus upstream
     CHECK(find(Proto::Lora, "nope") == nullptr);
-    CHECK(leaf_count<lora::SelfStatus>() == 10);
+    CHECK(leaf_count<lora::SelfStatus>() == 9);
     CHECK(leaf_count<lora::Heartbeat>() == 0);
 }
 
@@ -116,7 +114,7 @@ TEST_CASE("decode produces readable fields", "[mon]") {
     const Decoded st = dec(Proto::Lora, self_status());
     CHECK(st.name == "SelfStatus");
     CHECK(st.sender == 2);
-    CHECK(text(st) == "id=2 lat=42.0000000 lon=-71.0000000 scalar=0.25 age=120ms heading=90.0deg "
+    CHECK(text(st) == "id=2 lat=42.0000000 lon=-71.0000000 scalar=0.25 heading=90.0deg "
                       "state=AUTONOMOUS|ARMED|GATE_ENABLED faults=none gs_rssi=-97.5dBm gs_snr=7.5dB");
     CHECK(clean(st));
 
@@ -125,7 +123,7 @@ TEST_CASE("decode produces readable fields", "[mon]") {
     fresh.faults = boat::mode::fault::GPS_FAILURE;
     fresh.heading_deg = fresh.gs_rssi = fresh.gs_snr = NaN;
     const Decoded fd = dec(Proto::Lora, fresh);
-    CHECK(text(fd) == "id=2 lat=42.0000000 lon=-71.0000000 scalar=0.25 age=120ms heading=nan "
+    CHECK(text(fd) == "id=2 lat=42.0000000 lon=-71.0000000 scalar=0.25 heading=nan "
                       "state=MANUAL|DISARMED|GATE_TRIPPED faults=GPS_FAILURE gs_rssi=nan gs_snr=nan");
     CHECK(clean(fd));
 
@@ -145,9 +143,9 @@ TEST_CASE("decode produces readable fields", "[mon]") {
     ser::PeerTable pt{};
     pt.peer_entries.count = 2;
     pt.peer_entries.items[0] = peer(3);
-    pt.peer_entries.items[1] = peer(5);
+    pt.peer_entries.items[1] = peer(1);
     const Decoded p = dec(Proto::Serial, pt);
-    CHECK(text(p) == "peers=2 [3,42.0000000,-71.0000000,0.25,120ms] [5,42.0000000,-71.0000000,0.25,120ms]");
+    CHECK(text(p) == "peers=2 [3,42.0000000,-71.0000000,0.25] [1,42.0000000,-71.0000000,0.25]");
     CHECK(clean(p));
 
     ser::Status s{};
@@ -160,17 +158,28 @@ TEST_CASE("decode produces readable fields", "[mon]") {
     CHECK(text(sd) == "boat_id=3 gate=ENABLED faults=GPS_FAILURE|BATTERY_LOW links=1 [0,-101.0dBm,-3.5dB,7]");
     CHECK(clean(sd));
 
-    // ReceivedCommand has no fields upstream yet: hex, and not a problem.
-    wirelink::Frame rc{};
-    rc.type = static_cast<uint8_t>(ser::ReceivedCommand::TYPE);
-    rc.len = 3;
-    rc.payload.data[0] = 0x01;
-    rc.payload.data[1] = 0xAB;
-    rc.payload.data[2] = 0xFF;
-    const Decoded r = decode(Proto::Serial, rc);
+    // ReceivedCommand: the LoRa message inside is decoded and checked.
+    auto received = [](auto msg) {
+        wirelink::Frame inner{};
+        REQUIRE(wirelink::codec::pack(msg, inner));
+        ser::ReceivedCommand rc{};
+        rc.lora_type = inner.type;
+        rc.payload = inner.payload;
+        rc.payload.len = inner.len;
+        return rc;
+    };
+    const Decoded r = dec(Proto::Serial, received(lora::Command{2, 500, -250}));
     CHECK(r.name == "ReceivedCommand");
-    CHECK(text(r) == "payload=01abff");
+    CHECK(text(r) == "lora=Command rx_id=2 lin=500mm/s ang=-250mrad/s");
     CHECK(clean(r));
+
+    // payload.len left at 0 (framing::unwrap sets only Frame::len): the
+    // Command inside is empty, which must not pass as fine.
+    ser::ReceivedCommand empty = received(lora::Command{2, 500, -250});
+    empty.payload.len = 0;
+    CHECK(flagged(dec(Proto::Serial, empty), Severity::Error, "len 0"));
+
+    CHECK(flagged(dec(Proto::Serial, received(self_status())), Severity::Warning, "not a land message"));
 }
 
 TEST_CASE("unknown types and layout mismatches are reported", "[mon]") {
@@ -250,8 +259,8 @@ TEST_CASE("plausibility: positions and GPS", "[mon]") {
     lora::SelfStatus ss = self_status();
     ss.self.lat = 900000001;
     CHECK(flagged(dec(Proto::Lora, ss), Severity::Error, "lat 90.0000001 out of range"));
-    CHECK(flagged(dec(Proto::Serial, ser::BroadcastPayload{0, -1800000001, 1.0f}), Severity::Error, "lon"));
-    CHECK(clean(dec(Proto::Serial, ser::BroadcastPayload{0, 1800000000, 1.0f})));
+    CHECK(flagged(dec(Proto::Serial, ser::BroadcastEntry{PeerEntry{1, 0, -1800000001, 1.0f}}), Severity::Error, "lon"));
+    CHECK(clean(dec(Proto::Serial, ser::BroadcastEntry{PeerEntry{1, 0, 1800000000, 1.0f}})));
 
     ser::GPS g = gps();
     g.lat = g.lon = 0;
@@ -278,11 +287,11 @@ TEST_CASE("plausibility: positions and GPS", "[mon]") {
 
 TEST_CASE("plausibility: ids, modes, faults", "[mon]") {
     lora::SelfStatus s = self_status();
-    for (uint8_t id : {0, 11, 255}) {
+    for (uint8_t id : {0, 4, 255}) {
         s.self.id = id;
         CHECK(flagged(dec(Proto::Lora, s), Severity::Error, "id " + std::to_string(id) + " is not a boat id"));
     }
-    for (uint8_t id : {1, 10, 255}) {  // broadcast makes sense for rx_id
+    for (uint8_t id : {1, 3, 255}) {  // broadcast makes sense for rx_id
         CHECK(clean(dec(Proto::Lora, lora::Disable{id})));
         CHECK(clean(dec(Proto::Lora, lora::Reenable{id})));
         CHECK(clean(dec(Proto::Lora, lora::Command{id, 0, 0})));

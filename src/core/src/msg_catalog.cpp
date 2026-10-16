@@ -75,7 +75,7 @@ FieldSpec snr(const char* name) { return in(num(name, "dB", 1), -30, 30); }
 
 // PeerEntry and LinkStatus leaves, shared by several messages.
 void peer_entry(std::vector<FieldSpec>& v) {
-    v.insert(v.end(), {of("id", Kind::BoatId), lat(), lon(), num("scalar"), num("age", "ms")});
+    v.insert(v.end(), {of("id", Kind::BoatId), lat(), lon(), num("scalar")});
 }
 void link_status(std::vector<FieldSpec>& v) {
     v.insert(v.end(), {of("id", Kind::PeerId), rssi("rssi"), snr("snr"), num("lost")});
@@ -312,9 +312,29 @@ void decode_as(const MsgSpec& spec, const wirelink::Frame& f, Decoded& out) {
     Check(m, out.problems);
 }
 
-// Upstream has not defined its fields yet: show the bytes, not a problem.
-void decode_raw(const MsgSpec&, const wirelink::Frame& f, Decoded& out) {
-    out.fields.push_back({"payload", f.len ? hex(f.payload.data.data(), f.len) : "(empty)"});
+// The boat's ESP32 hands a land frame (Command, SetMode, ...) to the Pi as
+// {lora_type, payload}: show the LoRa message inside, decoded and checked.
+void decode_received_command(const MsgSpec&, const wirelink::Frame& f, Decoded& out) {
+    ser::ReceivedCommand m{};
+    wirelink::codec::Reader r{f.payload.data.data(), f.len};
+    r(m);
+    if (!r.ok || r.pos != f.len) {
+        error(out.problems, fmt("len %u does not hold lora_type + payload (layout mismatch?)", unsigned(f.len)));
+        out.fields.push_back({"raw", hex(f.payload.data.data(), f.len)});
+        return;
+    }
+    wirelink::Frame inner{};
+    inner.type = m.lora_type;
+    inner.len = static_cast<uint8_t>(m.payload.len);
+    inner.payload = m.payload;
+    const Decoded d = decode(Proto::Lora, inner);
+    out.fields.push_back({"lora", d.name});
+    out.fields.insert(out.fields.end(), d.fields.begin(), d.fields.end());
+    out.problems.insert(out.problems.end(), d.problems.begin(), d.problems.end());
+    // Only land frames are passed up; a boat's own SelfStatus or a
+    // base-local message (0x80+) here means the ESP32 forwarded the wrong thing.
+    if (d.known && (m.lora_type == static_cast<uint8_t>(lora::MsgType::SelfStatus) || m.lora_type >= 0x80))
+        warn(out.problems, fmt("%s is not a land message", d.name.c_str()));
 }
 
 void check_fix(uint8_t fix_quality, int32_t lat, int32_t lon, Problems& p) {
@@ -390,7 +410,8 @@ std::vector<MsgSpec> lora_messages() {
 
 std::vector<MsgSpec> serial_messages() {
     using namespace boat::esc;
-    std::vector<FieldSpec> broadcast{lat(), lon(), num("scalar")};
+    std::vector<FieldSpec> broadcast;
+    peer_entry(broadcast);
     return {
         {type_of<ser::Attitude>(), "Attitude",
          {num("q.x"), num("q.y"), num("q.z"), num("q.w"), num("gyro.x"), num("gyro.y"), num("gyro.z"),
@@ -405,7 +426,8 @@ std::vector<MsgSpec> serial_messages() {
         // DS18B20 range.
         {type_of<ser::OwnScalar>(), "OwnScalar", {in(num("scalar", "°C"), -55, 125)}, -1,
          decode_as<ser::OwnScalar>},
-        {type_of<ser::ReceivedCommand>(), "ReceivedCommand", {}, -1, decode_raw},
+        {type_of<ser::ReceivedCommand>(), "ReceivedCommand", {num("lora_type"), of("payload", Kind::Hex)}, -1,
+         decode_received_command},
         {type_of<ser::Status>(), "Status",
          with_list({of("boat_id", Kind::BoatId), of("gate", Kind::Gate), of("faults", Kind::Faults)}, "links",
                    link_status),
@@ -413,7 +435,7 @@ std::vector<MsgSpec> serial_messages() {
         {type_of<ser::MotorCommand>(), "MotorCommand",
          {in(num("port", "us"), PWM_MIN_US, PWM_MAX_US), in(num("stbd", "us"), PWM_MIN_US, PWM_MAX_US)}, -1,
          decode_as<ser::MotorCommand>},
-        {type_of<ser::BroadcastPayload>(), "BroadcastPayload", broadcast, -1, decode_as<ser::BroadcastPayload>},
+        {type_of<ser::BroadcastEntry>(), "BroadcastEntry", broadcast, 0, decode_as<ser::BroadcastEntry>},
         {type_of<ser::Config>(), "Config",
          {of("boat_id", Kind::BoatId), num("slot"), in(num("sf"), 5, 12), num("bw", "Hz"),
           in(num("freq", "Hz"), 902e6, 928e6), num("pwm_min", "us"), num("pwm_neutral", "us"),
