@@ -11,7 +11,7 @@
 //
 // The base station is the agreed minimal firmware (WIRELINK_CHANGES.md §3):
 // it keeps ONE "next land frame", the latest the PC sent (any LoRa land
-// type, unchanged, with the PC's seq). In its slot it transmits that frame,
+// type, unchanged). In its slot it transmits that frame,
 // or a Heartbeat of its own when it has none, empties the mailbox and writes
 // the transmitted packet back to the PC (the echo). All priority decisions
 // are the PC's (basestation::Uplink).
@@ -388,7 +388,7 @@ private:
     }
 
     // PC -> base station: the latest land frame replaces whatever the
-    // mailbox held, unchanged (the PC's seq goes out over the air).
+    // mailbox held, unchanged.
     void handle_pc_frame(const wirelink::Frame& f) {
         if (base::is_local_type(f.type) || f.type == static_cast<uint8_t>(lora::MsgType::SelfStatus) ||
             f.len > lora::MAX_LORA_PAYLOAD - 5) {
