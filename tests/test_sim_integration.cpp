@@ -187,7 +187,7 @@ TEST_CASE("simulator drives LinkSession, FleetModel and Commander end to end", "
         CHECK_FALSE(b.state.is_tripped());
         CHECK(b.state.reserved == 0);
         CHECK(b.self_status->faults == 0);
-        CHECK(std::isfinite(b.self_status->heading_deg));
+        CHECK(std::isfinite(b.self_status->self.heading_deg));
         CHECK(std::isfinite(b.self_status->gs_rssi));
         CHECK(std::isfinite(b.self_status->gs_snr));
     }

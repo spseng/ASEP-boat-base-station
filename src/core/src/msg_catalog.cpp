@@ -5,7 +5,6 @@
 
 #include <boat_defs/esc.h>
 #include <boat_defs/ids.h>
-#include <boat_defs/lora.h>
 #include <boat_defs/mode.h>
 
 #include <wirelink/msg/lora.h>
@@ -74,11 +73,14 @@ FieldSpec rssi(const char* name) { return in(num(name, "dBm", 1), -150, 0); }
 FieldSpec snr(const char* name) { return in(num(name, "dB", 1), -30, 30); }
 
 // PeerEntry and LinkStatus leaves, shared by several messages.
+// NaN = unknown for scalar (no reading from the Pi yet) and heading (no
+// heading source).
 void peer_entry(std::vector<FieldSpec>& v) {
-    v.insert(v.end(), {of("id", Kind::BoatId), lat(), lon(), num("scalar")});
+    v.insert(v.end(), {of("id", Kind::BoatId), lat(), lon(), nan_ok(num("scalar")),
+                       nan_ok(in(num("heading", "deg", 1), 0, 360))});
 }
 void link_status(std::vector<FieldSpec>& v) {
-    v.insert(v.end(), {of("id", Kind::PeerId), rssi("rssi"), snr("snr"), num("lost")});
+    v.insert(v.end(), {of("id", Kind::PeerId), rssi("rssi"), snr("snr"), num("age", "ms")});
 }
 std::vector<FieldSpec> with_list(std::vector<FieldSpec> head, const char* list,
                                  void (*elem)(std::vector<FieldSpec>&)) {
@@ -354,41 +356,15 @@ void check_attitude(const ser::Attitude& m, Problems& p) {
     if (std::isfinite(n) && (n < 0.9 || n > 1.1)) error(p, fmt("quat norm %.2f", n));
 }
 
-void check_config(const ser::Config& m, Problems& p) {
-    if (!(m.pwm_min < m.pwm_neutral && m.pwm_neutral < m.pwm_max)) {
-        error(p, fmt("pwm min<neutral<max violated (%u,%u,%u)", unsigned(m.pwm_min),
-                     unsigned(m.pwm_neutral), unsigned(m.pwm_max)));
-    }
-    // Nominal LoRa bandwidths; firmware may round them (7.8125k vs 7.8k), so 1%.
-    static const double BW[] = {7.8e3, 10.4e3, 15.6e3, 20.8e3, 31.25e3, 41.7e3, 62.5e3, 125e3, 250e3, 500e3};
-    const bool ok = std::any_of(std::begin(BW), std::end(BW),
-                                [&](double bw) { return std::fabs(m.lora_bw_hz - bw) <= 0.01 * bw; });
-    if (!ok) error(p, fmt("lora_bw %u Hz is not a LoRa bandwidth", unsigned(m.lora_bw_hz)));
-
-    // Valid but different from the fleet's radio settings: the boat's ESP32
-    // would neither hear nor be heard by anyone else.
-    namespace cfg = boat::lora::config;
-    const char* why = "differs from boat_defs/lora.h";
-    if (m.lora_sf != cfg::SPREADING_FACTOR)
-        warn(p, fmt("sf %u %s (SF%u): boat inaudible", unsigned(m.lora_sf), why, unsigned(cfg::SPREADING_FACTOR)));
-    const double bw_hz = static_cast<double>(cfg::BANDWIDTH) * 1e3;
-    if (std::fabs(m.lora_bw_hz - bw_hz) > 0.01 * bw_hz)
-        warn(p, fmt("bw %u Hz %s (%.0f Hz): boat inaudible", unsigned(m.lora_bw_hz), why, bw_hz));
-    const double freq_hz = static_cast<double>(cfg::FREQUENCY) * 1e6;
-    if (std::fabs(m.lora_freq_hz - freq_hz) > 1e3)
-        warn(p, fmt("freq %u Hz %s (%.0f Hz): boat inaudible", unsigned(m.lora_freq_hz), why, freq_hz));
-}
-
 template <class T>
 uint8_t type_of() { return static_cast<uint8_t>(T::TYPE); }
 
 std::vector<MsgSpec> lora_messages() {
-    // NaN = unknown for heading (no compass) and gs_* (land not heard yet);
-    // the scalar has no such meaning, so NaN there is an error.
+    // NaN = unknown for gs_* (land not heard yet).
     std::vector<FieldSpec> self;
     peer_entry(self);
-    self.insert(self.end(), {nan_ok(in(num("heading", "deg", 1), 0, 360)), of("state", Kind::State),
-                             of("faults", Kind::Faults), nan_ok(rssi("gs_rssi")), nan_ok(snr("gs_snr"))});
+    self.insert(self.end(), {of("state", Kind::State), of("faults", Kind::Faults), nan_ok(rssi("gs_rssi")),
+                             nan_ok(snr("gs_snr"))});
     return {
         {type_of<lora::Disable>(), "Disable", {of("rx_id", Kind::RxId)}, -1, decode_as<lora::Disable>},
         {type_of<lora::SelfStatus>(), "SelfStatus", self, 0, decode_as<lora::SelfStatus>},
@@ -436,12 +412,10 @@ std::vector<MsgSpec> serial_messages() {
          {in(num("port", "us"), PWM_MIN_US, PWM_MAX_US), in(num("stbd", "us"), PWM_MIN_US, PWM_MAX_US)}, -1,
          decode_as<ser::MotorCommand>},
         {type_of<ser::BroadcastEntry>(), "BroadcastEntry", broadcast, 0, decode_as<ser::BroadcastEntry>},
-        {type_of<ser::Config>(), "Config",
-         {of("boat_id", Kind::BoatId), num("slot"), in(num("sf"), 5, 12), num("bw", "Hz"),
-          in(num("freq", "Hz"), 902e6, 928e6), num("pwm_min", "us"), num("pwm_neutral", "us"),
-          num("pwm_max", "us"), in(num("output_enable"), 0, 1)},
-         -1, decode_as<ser::Config, check_config>},
-        {type_of<ser::Heartbeat>(), "Heartbeat", {of("ros_mode", Kind::Mode)}, -1, decode_as<ser::Heartbeat>},
+        {type_of<ser::Config>(), "Config", {of("boat_id", Kind::BoatId), in(num("gate_enable"), 0, 1)}, -1,
+         decode_as<ser::Config>},
+        {type_of<ser::Heartbeat>(), "Heartbeat", {of("ros_mode", Kind::Mode), of("ros_armed", Kind::Armed)}, -1,
+         decode_as<ser::Heartbeat>},
     };
 }
 

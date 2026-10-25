@@ -154,13 +154,6 @@ are off with `--no-color` or when stdout is not a terminal; `top` then prints
 a plain snapshot every second. The checks live in
 `src/core/src/msg_catalog.cpp`.
 
-**Radio settings.** With `--proto serial`, the Pi's `Config` message is also
-checked against `boat_defs/lora.h` (SF6, 500 kHz, 915 MHz): `lora_sf`,
-`lora_bw_hz` or `lora_freq_hz` that differ are a WARN. They may be valid LoRa
-settings, but a boat whose radio is set differently from the rest of the
-fleet can neither hear the others nor be heard. It is inaudible, as if it
-were switched off.
-
 ---
 
 ## Offline map and base-station position
@@ -269,7 +262,7 @@ lost packets per boat and per message type from them.
 | Type | Message | Direction | Defined in |
 |---|---|---|---|
 | 0 | `Disable {rx_id}` | land → boat | upstream `wirelink/msg/lora.h` |
-| 1 | `SelfStatus {PeerEntry self, heading_deg, state, faults, gs_rssi, gs_snr}` | boat → all, every TDMA cycle | 〃 |
+| 1 | `SelfStatus {PeerEntry self {id, lat, lon, scalar, heading_deg}, state, faults, gs_rssi, gs_snr}` | boat → all, every TDMA cycle | 〃 |
 | 2 | `Command {rx_id, lin_vel mm/s, ang_vel mrad/s}` | land → boat | 〃 |
 | 3 | `Heartbeat {}` | land → all, when the land slot has nothing else (the base ESP32's own) | 〃 |
 | 4 | `Reenable {rx_id}` | land → boat | 〃 |
@@ -280,9 +273,10 @@ lost packets per boat and per message type from them.
 
 `rx_id` 255 (`boat::ids::BROADCAST_ID`) addresses every boat.
 
-Everything a boat reports is in its **SelfStatus**: position and scalar
-(`self`), `heading_deg` (degrees true, NaN = no compass, then the app shows
-course over ground), `state` (bits 0-3 mode, bit 4 armed, bit 5 gate
+Everything a boat reports is in its **SelfStatus**: `self` (position,
+scalar and `heading_deg`, all as the Pi sent them to the boat's ESP32;
+NaN scalar = unknown, NaN heading = no heading, then the app shows course
+over ground), `state` (bits 0-3 mode, bit 4 armed, bit 5 gate
 enabled, bits 6-7 reserved; read with upstream `lora::get_mode` / `get_armed` / `get_gate`, written with `make_state`),
 `faults` (`boat::mode::fault` bits) and `gs_rssi` / `gs_snr`: how well the
 boat hears the land station, NaN until it has heard one land frame. The

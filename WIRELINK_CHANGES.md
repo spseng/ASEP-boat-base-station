@@ -5,7 +5,7 @@ This repository never modifies `ASEP-boat` (it is a read-only submodule under
 is listed here for you to apply upstream. Each item says what to change, why,
 and what the base station does in the meantime.
 
-Checked against ASEP-boat `a31bdf0` ("update echo for a more accurate usage").
+Checked against ASEP-boat `a370b26` ("fix serial bug").
 
 | § | Item | State |
 |---|---|---|
@@ -14,7 +14,7 @@ Checked against ASEP-boat `a31bdf0` ("update echo for a more accurate usage").
 | 3 | Base-local messages (`>= 0x80`); what the base ESP32 (RadioGround) does | **ADOPTED** in `2658776` (`wirelink/msg/base.h`); firmware **implemented** in `8b47fec` / `a31bdf0` |
 | 4 | Adding modes | information |
 | 5 | Minor items | open |
-| 6 | Found in `firmware/lib/RadioBoat` / `RadioGround` | partly fixed |
+| 6 | Found in `firmware/lib/RadioBoat` / `RadioGround` | fixed |
 
 ---
 
@@ -44,7 +44,7 @@ is deleted. Compared with the proposal, `Status` was folded into
 | Type | Message |
 |---|---|
 | 0 | `Disable {rx_id}` |
-| 1 | `SelfStatus {PeerEntry self, float heading_deg, uint8 state, uint8 faults, float gs_rssi, float gs_snr}` |
+| 1 | `SelfStatus {PeerEntry self, uint8 state, uint8 faults, float gs_rssi, float gs_snr}`; `PeerEntry {id, lat, lon, scalar, heading_deg}` since `c9734ab` (same bytes on the air as before) |
 | 2 | `Command {rx_id, int16 lin_vel mm/s, int16 ang_vel mrad/s}` |
 | 3 | `Heartbeat {}` |
 | 4 | `Reenable {rx_id}` |
@@ -64,9 +64,10 @@ left in its mailbox, or a `Heartbeat`. See §3 and the README.
 
 Small follow-ups for `lora.h`, none of them blocking:
 
-- **Document the NaN conventions** next to the fields: `heading_deg` NaN =
-  no compass; `gs_rssi` / `gs_snr` NaN = this boat has not heard a land frame
-  yet. The base station relies on both (shows course over ground, and `-`).
+- **Document the NaN conventions** next to the fields: `scalar` /
+  `heading_deg` NaN = not known yet (nothing from the Pi); `gs_rssi` /
+  `gs_snr` NaN = this boat has not heard a land frame yet. The base station
+  relies on all of them (shows `-`, course over ground instead of heading).
 - **`Heartbeat::fields(F& f) {}`** triggers `-Wunused-parameter` in every
   translation unit that packs a Heartbeat. Drop the name: `fields(F&) {}`.
   Meanwhile the base station includes the wirelink and boat_defs headers as
@@ -171,15 +172,9 @@ the point to add a dedicated message instead of stretching `SetMode`.
   A `Command` only goes out when the land slot has nothing more urgent, and
   LoRa loses packets, so one missing cycle is normal. A timeout of a single
   cycle would make teleop stutter. The simulator uses 500 ms.
-- **Serial `Config` LoRa fields vs `boat_defs/lora.h`.** `serial::Config`
-  still carries `lora_sf`, `lora_bw_hz` and `lora_freq_hz`, while the fleet's
-  settings are now compile-time constants in `boat_defs/lora.h` (in other
-  units: MHz / kHz floats vs Hz integers). Two sources of truth can
-  disagree, and a boat whose radio differs from the fleet's is simply
-  inaudible. Recommended: remove the three fields from `Config` and have the
-  ESP32 use `boat::lora::config`. If they must stay (e.g. for field tests),
-  have the Pi fill them from `boat_defs/lora.h`. Meanwhile `wl_mon --proto
-  serial` warns when they differ.
+- ~~Serial `Config` carried LoRa and PWM settings~~. `Config` is
+  `{boat_id, gate_enable}` since `c9734ab`; the radio comes from
+  `boat_defs/lora.h` and the PWM limits from `boat_defs/esc.h`.
 - **`Link::feed` cannot report corrupt frames.** It returns `nullopt` for
   both "frame not finished" and "frame failed CRC/COBS", so a receiver can't
   count bad frames. The base station uses its own splitter
@@ -212,15 +207,11 @@ Read while designing §3.
   one.
 - ~~`RadioGround.h` defined `Radio::rx_flag` in the header~~. Fixed in
   `8b47fec`.
-- **`wrap(frame, 0)`: every SelfStatus has seq 0 (optional).** `seq` is
-  only used by the app's per-boat loss figures; with a constant 0 every
-  frame after the first counts as a duplicate, so loss cannot be measured
-  (the Link panel marks such a sender). Nothing else depends on it. A
-  counter (`wrap(frame, seq++)`) brings the loss figures back.
-- **`heading_deg`, `gs_rssi`, `gs_snr` are sent as `0.0` while
-  unimplemented.** The app reads NaN as "unknown" (§2). With 0.0 it shows a
-  compass heading of north and a land link of 0 dBm. Send `NAN` until they
-  are filled in.
-- **`Disable` is still a TODO** in RadioBoat's `receive()`. Until it is
-  implemented the app's DISABLE does nothing on a real boat; only the
-  hardware E-stop does.
+- ~~`wrap(frame, 0)`: every SelfStatus had seq 0~~. A counter since
+  `c9734ab`; the app's per-boat loss figures work again.
+- ~~`heading_deg`, `gs_rssi`, `gs_snr` were sent as `0.0`~~. NaN until known
+  since `c9734ab`.
+- ~~`Disable` was a TODO in RadioBoat's `receive()`~~. Since `c9734ab` it
+  trips the ESP32's gate for its own id or `BROADCAST_ID`.
+- ~~`serial::Heartbeat.ros_armed` was missing from `fields()`~~. Fixed in
+  `a370b26`; `wl_mon --proto serial` shows it.

@@ -141,7 +141,10 @@ void App::draw_boats_table() {
             }
 
             ImGui::TableNextColumn();
-            if (b.self_status) ImGui::Text("%.2f °C", static_cast<double>(b.self_status->self.scalar));
+            if (b.self_status && std::isfinite(b.self_status->self.scalar))
+                ImGui::Text("%.2f °C", static_cast<double>(b.self_status->self.scalar));
+            else if (b.self_status)
+                ImGui::TextDisabled("-");
             else dash();
 
             ImGui::TableNextColumn();

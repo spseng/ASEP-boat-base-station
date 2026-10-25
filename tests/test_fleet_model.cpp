@@ -43,7 +43,7 @@ lora::SelfStatus self_at(uint8_t id, double north_m = 0, double east_m = 0, floa
     s.self.lat = boat::units::deg_to_e7(p.lat_deg);
     s.self.lon = boat::units::deg_to_e7(p.lon_deg);
     s.self.scalar = scalar;
-    s.heading_deg = NAN;
+    s.self.heading_deg = NAN;
     s.state = state::encode(Mode::MANUAL, ArmedState::DISARMED, GateState::ENABLED);
     s.faults = 0;
     s.gs_rssi = NAN;
@@ -59,7 +59,7 @@ lora::SelfStatus status_of(uint8_t id, boat::mode::Mode mode = boat::mode::Mode:
     lora::SelfStatus s = self_at(id);
     s.state = state::encode(mode, armed, gate);
     s.faults = faults;
-    s.heading_deg = heading;
+    s.self.heading_deg = heading;
     s.gs_rssi = gs_rssi;
     s.gs_snr = gs_snr;
     return s;
@@ -482,7 +482,7 @@ TEST_CASE("FleetModel: derived course and heading preference", "[model][fleet]")
 
     // The boat's own heading wins when finite...
     lora::SelfStatus compass = self_at(1, -3, 0);
-    compass.heading_deg = 12.5f;
+    compass.self.heading_deg = 12.5f;
     m.ingest(make_rx(compass, 4, 4));
     CHECK(m.boats().at(1).has_compass_heading());
     CHECK(m.boats().at(1).heading_deg() == 12.5f);

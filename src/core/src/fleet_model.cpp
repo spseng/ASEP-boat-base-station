@@ -126,11 +126,11 @@ SeqStats BoatState::total_seq() const {
 }
 
 bool BoatState::has_compass_heading() const {
-    return self_status && std::isfinite(self_status->heading_deg);
+    return self_status && std::isfinite(self_status->self.heading_deg);
 }
 
 float BoatState::heading_deg() const {
-    return has_compass_heading() ? self_status->heading_deg : derived_course_deg;
+    return has_compass_heading() ? self_status->self.heading_deg : derived_course_deg;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +298,7 @@ void FleetModel::ingest(const RxFrame& rx) {
         b.self_status = msg;
         b.self_status_time = rx.t;
         b.state = st;
-        b.scalar_history.push_back(Sample{now_s, msg.self.scalar});
+        if (std::isfinite(msg.self.scalar)) b.scalar_history.push_back(Sample{now_s, msg.self.scalar});
         if (std::isfinite(msg.gs_rssi)) b.gs_rssi_history.push_back(Sample{now_s, msg.gs_rssi});
 
         const geo::LatLon p = geo::from_e7(msg.self.lat, msg.self.lon);

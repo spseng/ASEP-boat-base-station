@@ -87,7 +87,7 @@ bool wait_for(Pred pred) {
 wirelink::Frame status_frame(uint8_t tx_id) {
     lora::SelfStatus s{};
     s.self.id = tx_id;
-    s.heading_deg = 90.0f;
+    s.self.heading_deg = 90.0f;
     s.state = 0x31;
     s.gs_rssi = -80.0f;
     s.gs_snr = 5.0f;

@@ -102,7 +102,7 @@ std::string decode(const wirelink::Frame& f) {
                 return fmt("id=%u lat=%.7f lon=%.7f scalar=%g heading=%.1f",
                            unsigned(m.self.id), boat::units::e7_to_deg(m.self.lat),
                            boat::units::e7_to_deg(m.self.lon), double(m.self.scalar),
-                           double(m.heading_deg)) +
+                           double(m.self.heading_deg)) +
                        fmt(" mode=%s armed=%s gate=%s state=0x%02x faults=0x%02x gs_rssi=%.1f gs_snr=%.1f",
                            names::mode_name(st.mode).c_str(), names::armed_name(st.armed).c_str(),
                            names::gate_name(st.gate).c_str(), unsigned(m.state), unsigned(m.faults),

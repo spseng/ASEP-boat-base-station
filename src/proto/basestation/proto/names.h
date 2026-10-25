@@ -68,6 +68,7 @@ inline constexpr FaultInfo FAULTS[] = {
     {boat::mode::fault::MOTOR_FAILURE, "MOTOR_FAILURE"},
     {boat::mode::fault::BATTERY_LOW, "BATTERY_LOW"},
     {boat::mode::fault::SENSOR_FAILURE, "SENSOR_FAILURE"},
+    {boat::mode::fault::ID_CONFLICT, "ID_CONFLICT"},
 };
 
 // Names of the set bits; unknown bits appear as "BIT<n>". Takes the uint8
