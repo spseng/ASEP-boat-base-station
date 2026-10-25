@@ -5,7 +5,7 @@ This repository never modifies `ASEP-boat` (it is a read-only submodule under
 is listed here for you to apply upstream. Each item says what to change, why,
 and what the base station does in the meantime.
 
-Checked against ASEP-boat `c9734ab` ("Added mode/gate managers to firmware").
+Checked against ASEP-boat `a370b26` ("fix serial bug").
 
 | § | Item | State |
 |---|---|---|
@@ -14,7 +14,7 @@ Checked against ASEP-boat `c9734ab` ("Added mode/gate managers to firmware").
 | 3 | Base-local messages (`>= 0x80`); what the base ESP32 (RadioGround) does | **ADOPTED** in `2658776` (`wirelink/msg/base.h`); firmware **implemented** in `8b47fec` / `a31bdf0` |
 | 4 | Adding modes | information |
 | 5 | Minor items | open |
-| 6 | Found in `firmware/lib/RadioBoat` / `RadioGround` | mostly fixed; one open item |
+| 6 | Found in `firmware/lib/RadioBoat` / `RadioGround` | fixed |
 
 ---
 
@@ -213,9 +213,5 @@ Read while designing §3.
   since `c9734ab`.
 - ~~`Disable` was a TODO in RadioBoat's `receive()`~~. Since `c9734ab` it
   trips the ESP32's gate for its own id or `BROADCAST_ID`.
-- **`serial::Heartbeat` got `ros_armed`, but `fields()` still visits only
-  `ros_mode`**, so `ros_armed` is never sent or received: the ESP32 reads
-  an unset value and the armed bit of `SelfStatus.state` is garbage. Fix:
-  `fields(F& f) { f(ros_mode); f(ros_armed); }`. The base station's
-  `wl_mon` spec for `Heartbeat` follows the fields, so its test will ask for
-  the new field once this is fixed.
+- ~~`serial::Heartbeat.ros_armed` was missing from `fields()`~~. Fixed in
+  `a370b26`; `wl_mon --proto serial` shows it.

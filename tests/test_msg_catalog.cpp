@@ -348,6 +348,8 @@ TEST_CASE("plausibility: ids, modes, faults", "[mon]") {
     CHECK(flagged(dec(Proto::Serial, st), Severity::Error, "links[0].id 200"));
 
     CHECK(flagged(dec(Proto::Serial, ser::Heartbeat{42, 0}), Severity::Warning, "unknown mode 42"));
+    CHECK(text(dec(Proto::Serial, ser::Heartbeat{0, 1})) == "ros_mode=MANUAL ros_armed=ARMED");
+    CHECK(flagged(dec(Proto::Serial, ser::Heartbeat{0, 2}), Severity::Error, "ros_armed"));
 }
 
 TEST_CASE("plausibility: motor command and config", "[mon]") {

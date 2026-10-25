@@ -414,7 +414,8 @@ std::vector<MsgSpec> serial_messages() {
         {type_of<ser::BroadcastEntry>(), "BroadcastEntry", broadcast, 0, decode_as<ser::BroadcastEntry>},
         {type_of<ser::Config>(), "Config", {of("boat_id", Kind::BoatId), in(num("gate_enable"), 0, 1)}, -1,
          decode_as<ser::Config>},
-        {type_of<ser::Heartbeat>(), "Heartbeat", {of("ros_mode", Kind::Mode)}, -1, decode_as<ser::Heartbeat>},
+        {type_of<ser::Heartbeat>(), "Heartbeat", {of("ros_mode", Kind::Mode), of("ros_armed", Kind::Armed)}, -1,
+         decode_as<ser::Heartbeat>},
     };
 }
 
