@@ -452,7 +452,10 @@ void App::draw_fleet_view() {
             ImGui::TextColored(st.is_tripped() ? colors::danger : colors::ok, "%s", names::gate_name(st.gate).c_str());
             if (b.self_status->faults)
                 ImGui::TextColored(colors::warn, "Faults: %s", names::fault_list(b.self_status->faults).c_str());
-            ImGui::Text("Scalar: %.2f °C", static_cast<double>(b.self_status->self.scalar));
+            if (std::isfinite(b.self_status->self.scalar))
+                ImGui::Text("Scalar: %.2f °C", static_cast<double>(b.self_status->self.scalar));
+            else
+                ImGui::TextDisabled("Scalar: unknown");
             ImGui::Text("Position: %.1f m E, %.1f m N", hovered->e, hovered->n);
             if (base_pos_.known()) {
                 const geo::NorthEast rel = geo::LocalFrame(base_pos_.pos)

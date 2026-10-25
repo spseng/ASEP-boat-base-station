@@ -52,12 +52,12 @@ T round_trip(const T& msg) {
 }
 
 PeerEntry peer(uint8_t id) {
-    return PeerEntry{id, -337123456 - id, 1512345678 + id, 0.25f * id};
+    return PeerEntry{id, -337123456 - id, 1512345678 + id, 0.25f * id, 271.5f};
 }
 
 lora::SelfStatus self_status(uint8_t id) {
     using namespace boat::mode;
-    return lora::SelfStatus{peer(id), 271.5f, state::encode(Mode::AUTONOMOUS, ArmedState::ARMED, GateState::ENABLED),
+    return lora::SelfStatus{peer(id), state::encode(Mode::AUTONOMOUS, ArmedState::ARMED, GateState::ENABLED),
                             fault::GPS_FAILURE, -80.0f, 9.5f};
 }
 
@@ -74,7 +74,7 @@ TEST_CASE("lora messages round-trip", "[codec]") {
         CHECK(out.self.lat == -337123459);
         CHECK(out.self.lon == 1512345681);
         CHECK(out.self.scalar == 0.75f);
-        CHECK(out.heading_deg == 271.5f);
+        CHECK(out.self.heading_deg == 271.5f);
         CHECK(out.state == 0x31);
         CHECK(out.faults == boat::mode::fault::GPS_FAILURE);
         CHECK(out.gs_rssi == -80.0f);
@@ -83,10 +83,10 @@ TEST_CASE("lora messages round-trip", "[codec]") {
     SECTION("SelfStatus with NaN fields") {
         const float nan = std::numeric_limits<float>::quiet_NaN();
         lora::SelfStatus s = self_status(4);
-        s.heading_deg = s.gs_rssi = s.gs_snr = nan;
+        s.self.heading_deg = s.gs_rssi = s.gs_snr = nan;
         s.faults = 0xFF;
         const auto out = round_trip(s);
-        CHECK(std::isnan(out.heading_deg));
+        CHECK(std::isnan(out.self.heading_deg));
         CHECK(std::isnan(out.gs_rssi));
         CHECK(std::isnan(out.gs_snr));
         CHECK(out.faults == 0xFF);
@@ -159,12 +159,12 @@ TEST_CASE("wire sizes", "[codec]") {
 TEST_CASE("fields are little-endian two's complement", "[codec]") {
     CHECK(encode(lora::Command{0x11, -2, 0x0102}) == std::vector<uint8_t>{0x11, 0xFE, 0xFF, 0x02, 0x01});
     lora::SelfStatus s{};
-    s.self = PeerEntry{1, -1, 2, 0.0f};
+    s.self = PeerEntry{1, -1, 2, 0.0f, 0.0f};
     s.state = 0x25;
     s.faults = 0x81;
     const auto b = encode(s);
     CHECK(std::vector<uint8_t>(b.begin() + 1, b.begin() + 5) == std::vector<uint8_t>{0xFF, 0xFF, 0xFF, 0xFF});
-    // self (13 bytes), heading (4), then state and faults.
+    // self (17 bytes, heading last), then state and faults.
     CHECK(b[17] == 0x25);
     CHECK(b[18] == 0x81);
 }
@@ -219,7 +219,7 @@ TEST_CASE("pack -> wrap -> unwrap -> unpack", "[codec]") {
     REQUIRE(codec::unpack(*back, s));
     CHECK(s.self.id == 9);
     CHECK(s.faults == boat::mode::fault::GPS_FAILURE);
-    CHECK(s.heading_deg == 271.5f);
+    CHECK(s.self.heading_deg == 271.5f);
     CHECK(s.gs_rssi == -80.0f);
     CHECK(s.gs_snr == 9.5f);
 }

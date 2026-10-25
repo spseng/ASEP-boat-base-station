@@ -215,7 +215,10 @@ void App::draw_boat_detail(const BoatState& b) {
             ImGui::TextColored(age_s > 3.0 ? colors::warn : ImGui::GetStyleColorVec4(ImGuiCol_Text), "%.1f s",
                                age_s);
             row("Scalar");
-            ImGui::Text("%.3f °C", static_cast<double>(self.scalar));
+            if (std::isfinite(self.scalar))
+                ImGui::Text("%.3f °C", static_cast<double>(self.scalar));
+            else
+                ImGui::TextDisabled("unknown");
         }
         row("Heading");
         const float hdg = b.heading_deg();

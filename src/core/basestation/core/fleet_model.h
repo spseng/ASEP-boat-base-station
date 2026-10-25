@@ -56,7 +56,7 @@ struct BoatState {
 
     // From lora::SelfStatus, the boat's whole report (position, scalar,
     // heading, state, faults, how well it hears land), sent once per TDMA
-    // cycle. NaN heading / gs_rssi / gs_snr mean unknown.
+    // cycle. NaN scalar / heading / gs_rssi / gs_snr mean unknown.
     std::optional<lora::SelfStatus> self_status;
     Clock::time_point self_status_time{};
     // self_status->state decoded; valid whenever self_status is set.
@@ -66,7 +66,7 @@ struct BoatState {
     std::optional<base::RxInfo> rx_info;
 
     // Course over ground derived from the trail (NaN until the boat has moved
-    // more than a couple of metres). Used when SelfStatus.heading_deg is NaN.
+    // more than a couple of metres). Used when SelfStatus.self.heading_deg is NaN.
     float derived_course_deg = NAN;
 
     std::map<uint8_t, SeqStats> seq;  // key: lora::MsgType
@@ -82,7 +82,7 @@ struct BoatState {
     SeqStats total_seq() const;
     // The last SelfStatus carried a heading (not NaN).
     bool has_compass_heading() const;
-    // Best available heading: SelfStatus.heading_deg, else derived course, else NaN.
+    // Best available heading: SelfStatus.self.heading_deg, else derived course, else NaN.
     float heading_deg() const;
 };
 

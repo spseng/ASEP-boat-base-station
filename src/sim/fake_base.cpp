@@ -319,7 +319,7 @@ private:
         m.self.lat = g.lat;
         m.self.lon = g.lon;
         m.self.scalar = world_.scalar_at(b.north_m, b.east_m);
-        m.heading_deg = static_cast<float>(b.heading_deg);
+        m.self.heading_deg = static_cast<float>(b.heading_deg);
         m.state = state::encode(static_cast<uint8_t>(b.mode), b.armed, b.gate);
         m.faults = b.faults;
         m.gs_rssi = b.gs_rssi;
