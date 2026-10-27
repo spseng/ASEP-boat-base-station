@@ -42,7 +42,10 @@ add_executable(asep_base_station
   ui_map.cpp
 )
 target_link_libraries(asep_base_station PRIVATE basestation_core imgui stb_image basestation_warnings)
-target_compile_definitions(asep_base_station PRIVATE BASESTATION_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(asep_base_station PRIVATE
+  BASESTATION_VERSION="${PROJECT_VERSION}"
+  # Default site file: the boats' own, in the submodule this app was built from.
+  BASESTATION_DEFAULT_SITE_FILE="${ASEP_BOAT_DIR}/ros/bringup/config/cites/concord_nh.yaml")
 
 if(APPLE)
   set_target_properties(asep_base_station PROPERTIES MACOSX_BUNDLE OFF)

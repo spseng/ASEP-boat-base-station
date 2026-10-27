@@ -44,6 +44,22 @@ if(BASESTATION_BUILD_GUI)
   FetchContent_MakeAvailable(SDL3 imgui implot stb)
 endif()
 
+# --- yaml-cpp (site config: the boats' ROS parameter files) ------------------
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+set(YAML_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+# yaml-cpp 0.8.0 declares cmake_minimum_required(3.4), which CMake 4 rejects.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_Declare(yaml-cpp
+  GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+  GIT_TAG        0.8.0
+  GIT_SHALLOW    TRUE
+  EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(yaml-cpp)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
+
 if(BASESTATION_BUILD_TESTS)
   FetchContent_Declare(Catch2
     GIT_REPOSITORY https://github.com/catchorg/Catch2.git

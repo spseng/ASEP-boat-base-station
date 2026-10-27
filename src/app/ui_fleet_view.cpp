@@ -103,13 +103,15 @@ void App::draw_fleet_view() {
     if (ImGui::Button("Fit")) map_fit_once_ = true;
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Zoom to show every boat and trail");
     ImGui::SameLine();
-    const bool origin_pinned = settings_.base.as_origin && base_pos_.known();
+    const bool site_pinned = site_origin().has_value();
+    const bool origin_pinned = site_pinned || (settings_.base.as_origin && base_pos_.known());
     ImGui::BeginDisabled(!local_ || origin_pinned);
     if (ImGui::Button("Re-center")) map_recenter_ = true;
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip(origin_pinned ? "The origin is the base station (Base... > Use base station as map origin)"
-                                        : "Move the map origin to the current fleet centroid (keeps the zoom)");
+        ImGui::SetTooltip(site_pinned     ? "The origin is the site datum (Site... > Use the datum as map origin)"
+                          : origin_pinned ? "The origin is the base station (Base... > Use base station as map origin)"
+                                          : "Move the map origin to the current fleet centroid (keeps the zoom)");
     ImGui::SameLine();
     ImGui::Checkbox("Auto-fit", &map_auto_fit_);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
@@ -138,6 +140,17 @@ void App::draw_fleet_view() {
         draw_base_controls();
         ImGui::EndPopup();
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Site...")) {
+        std::snprintf(site_file_buf_.data(), site_file_buf_.size(), "%s", settings_.site.file.c_str());
+        ImGui::OpenPopup("##sitectl");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("The boats' site file: their frame origin (navsat datum)");
+    if (ImGui::BeginPopup("##sitectl")) {
+        draw_site_controls();
+        ImGui::EndPopup();
+    }
     const tiles::TileService::PrefetchStatus pf = map_->service().prefetch_status();
     if (pf.active) {
         ImGui::SameLine();
@@ -149,7 +162,7 @@ void App::draw_fleet_view() {
         ImGui::SameLine();
         const geo::LatLon o = local_->origin();
         char buf[96];
-        std::snprintf(buf, sizeof buf, "origin %.6f, %.6f", o.lat_deg, o.lon_deg);
+        std::snprintf(buf, sizeof buf, "origin %.6f, %.6f%s", o.lat_deg, o.lon_deg, site_pinned ? " (site datum)" : "");
         ImGui::SameLine(std::max(ImGui::GetCursorPosX(),
                                  ImGui::GetWindowContentRegionMax().x - ImGui::CalcTextSize(buf).x));
         ImGui::AlignTextToFramePadding();

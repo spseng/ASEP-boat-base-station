@@ -18,6 +18,8 @@ constexpr double GPS_CACHE_MIN_MOVE_M = 5.0;
 // With "Use base station as map origin", the origin follows the base only
 // when it moves more than this (GPS jitter would shake the view otherwise).
 constexpr double ORIGIN_FOLLOW_M = 3.0;
+// The site datum is exact: any change (a reloaded file) moves the origin.
+constexpr double SITE_ORIGIN_MOVE_M = 0.01;
 
 double distance_between(geo::LatLon a, geo::LatLon b) {
     return geo::distance_m({}, geo::LocalFrame(a).to_local(b));
@@ -58,6 +60,12 @@ void App::update_base_position() {
         }
     }
 
+    // The site datum, when used, is the origin: the boats' /state/odom frame.
+    if (const std::optional<geo::LatLon> o = site_origin()) {
+        if (!local_ || distance_between(local_->origin(), *o) > SITE_ORIGIN_MOVE_M) set_map_origin(*o);
+        return;
+    }
+
     // The map needs an origin before any boat is heard; the base station is
     // the natural one. With "as origin", it follows the base.
     if (!base_pos_.known() || base_dragging_) return;
@@ -67,6 +75,33 @@ void App::update_base_position() {
     } else if (!local_) {
         set_map_origin(base_pos_.pos);
     }
+}
+
+std::string App::effective_site_file() const {
+    return settings_.site.file.empty() ? std::string(BASESTATION_DEFAULT_SITE_FILE) : settings_.site.file;
+}
+
+void App::load_site() {
+    const std::string file = effective_site_file();
+    std::string err;
+    site_ = site::load(file, &err);
+    site_loaded_file_ = file;
+    site_error_ = site_ ? std::string() : err;
+    copy_to(site_file_buf_, settings_.site.file);
+    if (!site_) {
+        events_.warn("Site file not used: " + err);
+        return;
+    }
+    const geo::LatLon o = *site_->origin();
+    char buf[96];
+    std::snprintf(buf, sizeof buf, "%.7f, %.7f", o.lat_deg, o.lon_deg);
+    events_.info("Site origin " + std::string(buf) + " from " + file);
+    for (const std::string& w : site_->warnings) events_.warn("Site file: " + w);
+}
+
+std::optional<geo::LatLon> App::site_origin() const {
+    if (!settings_.site.as_origin || !site_) return std::nullopt;
+    return site_->origin();
 }
 
 void App::set_map_origin(geo::LatLon origin) {
@@ -282,9 +317,54 @@ void App::draw_base_controls() {
     ImGui::Checkbox("Prefer manual position over base GPS", &bs.pin_manual);
     help_marker("When the base ESP32 reports a GPS fix it normally wins over the position set by hand. "
                 "Tick this to keep using the manual one (e.g. the GPS antenna is not where the radio is).");
+    ImGui::BeginDisabled(site_origin().has_value());
     ImGui::Checkbox("Use base station as map origin", &bs.as_origin);
-    help_marker("The Fleet view's 0,0 is the base station, the same in every session. Otherwise it is "
-                "wherever the first position came from.");
+    ImGui::EndDisabled();
+    help_marker(site_origin() ? "The site datum is the map origin (Site...)."
+                              : "The Fleet view's 0,0 is the base station, the same in every session. Otherwise it "
+                                "is wherever the first position came from.");
+}
+
+void App::draw_site_controls() {
+    SiteSettings& ss = settings_.site;
+    const float field_w = ImGui::GetFontSize() * 26.0f;
+
+    ImGui::TextUnformatted("Site file (the boats' ROS parameters)");
+    ImGui::SetNextItemWidth(field_w);
+    ImGui::InputTextWithHint("##sitefile", "empty = default", site_file_buf_.data(), site_file_buf_.size());
+    ImGui::SameLine();
+    if (ImGui::Button("Load")) {
+        ss.file = site_file_buf_.data();
+        load_site();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Default")) {
+        ss.file.clear();
+        load_site();
+    }
+    ImGui::TextDisabled("%s", site_loaded_file_.c_str());
+
+    if (!site_) {
+        ImGui::TextColored(colors::danger, "Not loaded: %s", site_error_.c_str());
+    } else {
+        const site::SiteConfig& c = *site_;
+        if (c.datum)
+            ImGui::Text("Datum (navsat_transform): %.7f, %.7f", c.datum->lat_deg, c.datum->lon_deg);
+        else
+            ImGui::TextColored(colors::warn, "No navsat_transform datum");
+        if (c.lookout_origin)
+            ImGui::Text("Lookout origin:           %.7f, %.7f", c.lookout_origin->lat_deg, c.lookout_origin->lon_deg);
+        else
+            ImGui::TextDisabled("No lookout origin");
+        for (const std::string& w : c.warnings) ImGui::TextColored(colors::warn, "%s", w.c_str());
+    }
+
+    ImGui::Separator();
+    ImGui::BeginDisabled(!site_);
+    ImGui::Checkbox("Use the datum as map origin", &ss.as_origin);
+    ImGui::EndDisabled();
+    help_marker("The Fleet view's 0,0 is the boats' own origin, so East/North read the same as their "
+                "/state/odom. Takes precedence over 'Use base station as map origin'.");
 }
 
 // ---------------------------------------------------------------------------

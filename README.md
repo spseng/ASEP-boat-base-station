@@ -33,7 +33,7 @@ read-only as a git submodule for the shared message definitions.
 ## Building
 
 You need a C++17 compiler, CMake ≥ 3.22, Ninja (optional) and git. SDL3,
-Dear ImGui, ImPlot, stb_image and Catch2 are downloaded and built
+Dear ImGui, ImPlot, stb_image, yaml-cpp and Catch2 are downloaded and built
 automatically the first time you configure. The first build takes a few
 minutes, mostly SDL3. libcurl (for downloading map tiles) comes from the
 system; without it the app still builds, but the map shows only tiles that
@@ -201,6 +201,16 @@ centred on it, so the map is useful right away. The Boats table gets a
 **Range** column: distance and bearing from the base station to each boat,
 for LoRa range checks. *Use base station as map origin* keeps the Fleet
 view's 0,0 on the base station in every session.
+
+**Site file and map origin.** At startup the app reads the boats' site file,
+by default `external/ASEP-boat/ros/bringup/config/cites/concord_nh.yaml`
+(the ROS parameter YAML the boats load), and puts the Fleet view's 0,0 on
+`navsat_transform`'s `datum`, the origin of the boats' `/state/odom`. East /
+North in the Fleet view then read the same as `/state/odom` x / y. **Site...**
+shows the datum and lookout's `origin_lat`/`origin_lon`, warns if the two
+differ (boats would place peers in a different frame from themselves), loads
+another file, and turns the datum origin off. While it is on it takes
+precedence over *Use base station as map origin* and Re-center.
 
 If the base ESP32 ever gets a GPS, it can send `BasePosition` (0x82, see
 [Protocol](#protocol)); a fix then overrides the hand-set position (the

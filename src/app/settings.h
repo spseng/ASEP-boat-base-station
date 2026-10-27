@@ -35,6 +35,12 @@ struct BaseSettings {
     double gps_lon = 0;
 };
 
+// The boats' site file (ROS parameter YAML with navsat_transform's datum).
+struct SiteSettings {
+    std::string file;       // empty = the default in the ASEP-boat submodule
+    bool as_origin = true;  // anchor the Fleet view at the datum (= /state/odom's 0,0)
+};
+
 struct Settings {
     // Connection
     std::string port;
@@ -60,6 +66,7 @@ struct Settings {
 
     MapSettings map{};
     BaseSettings base{};
+    SiteSettings site{};
 };
 
 // Returns false if the file could not be read (out keeps its defaults).
