@@ -89,14 +89,18 @@ void App::load_site() {
     site_error_ = site_ ? std::string() : err;
     copy_to(site_file_buf_, settings_.site.file);
     if (!site_) {
+        field_->set(nullptr, {});
         events_.warn("Site file not used: " + err);
         return;
     }
+    field_->set(site_->field ? &*site_->field : nullptr, *site_->origin());
     const geo::LatLon o = *site_->origin();
     char buf[96];
     std::snprintf(buf, sizeof buf, "%.7f, %.7f", o.lat_deg, o.lon_deg);
     events_.info("Site origin " + std::string(buf) + " from " + file);
     for (const std::string& w : site_->warnings) events_.warn("Site file: " + w);
+    if (site_->field)
+        events_.info("Scalar field: " + std::to_string(site_->field->gaussians.size()) + " Gaussians");
 }
 
 std::optional<geo::LatLon> App::site_origin() const {
@@ -357,6 +361,11 @@ void App::draw_site_controls() {
         else
             ImGui::TextDisabled("No lookout origin");
         for (const std::string& w : c.warnings) ImGui::TextColored(colors::warn, "%s", w.c_str());
+        if (c.field && field_->ready())
+            ImGui::Text("Scalar field: %zu Gaussians, %.2f to %.2f", c.field->gaussians.size(), field_->min_value(),
+                        field_->max_value());
+        else if (!c.field)
+            ImGui::TextDisabled("No scalar field (scalar_source: field_x, field_y, field_amp, field_sigma)");
     }
 
     ImGui::Separator();
@@ -365,6 +374,14 @@ void App::draw_site_controls() {
     ImGui::EndDisabled();
     help_marker("The Fleet view's 0,0 is the boats' own origin, so East/North read the same as their "
                 "/state/odom. Takes precedence over 'Use base station as map origin'.");
+    ImGui::BeginDisabled(!field_->ready());
+    ImGui::Checkbox("Show the scalar field", &ss.show_field);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
+    ImGui::SliderFloat("Opacity", &ss.field_opacity, 0.05f, 1.0f, "%.2f");
+    ImGui::EndDisabled();
+    help_marker("scalar_source's simulated field, blue = low, red = high. The cross marks its lowest "
+                "point. Reload the file (Load) after editing it.");
 }
 
 // ---------------------------------------------------------------------------

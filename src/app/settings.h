@@ -39,6 +39,8 @@ struct BaseSettings {
 struct SiteSettings {
     std::string file;       // empty = the default in the ASEP-boat submodule
     bool as_origin = true;  // anchor the Fleet view at the datum (= /state/odom's 0,0)
+    bool show_field = true;      // draw scalar_source's simulated field
+    float field_opacity = 0.6f;
 };
 
 struct Settings {

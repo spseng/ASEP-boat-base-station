@@ -39,6 +39,7 @@ add_executable(asep_base_station
   ui_link.cpp
   ui_events.cpp
   map_layer.cpp
+  field_layer.cpp
   ui_map.cpp
 )
 target_link_libraries(asep_base_station PRIVATE basestation_core imgui stb_image basestation_warnings)

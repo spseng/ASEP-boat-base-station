@@ -138,6 +138,8 @@ std::string settings_to_string(const Settings& s) {
     o << "base.gps_lon = " << fmt_deg(b.gps_lon) << "\n";
     o << "site.file = " << s.site.file << "\n";
     o << "site.as_origin = " << (s.site.as_origin ? 1 : 0) << "\n";
+    o << "site.show_field = " << (s.site.show_field ? 1 : 0) << "\n";
+    o << "site.field_opacity = " << fmt_float(s.site.field_opacity) << "\n";
     return o.str();
 }
 
@@ -242,6 +244,8 @@ bool load_settings(const std::string& path, Settings& s) {
     }
     if (const std::string* v = get("site.file")) s.site.file = *v;
     get_bool("site.as_origin", s.site.as_origin);
+    get_bool("site.show_field", s.site.show_field);
+    get_float("site.field_opacity", 0.05f, 1.0f, s.site.field_opacity);
     return true;
 }
 
