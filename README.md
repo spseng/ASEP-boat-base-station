@@ -211,6 +211,28 @@ shows the datum and lookout's `origin_lat`/`origin_lon`, warns if the two
 differ (boats would place peers in a different frame from themselves), loads
 another file, and turns the datum origin off. While it is on it takes
 precedence over *Use base station as map origin* and Re-center.
+`--site FILE` picks the file from the command line.
+
+**Simulated scalar field.** If the site file has `scalar_source`'s field,
+
+```yaml
+scalar_source:
+  ros__parameters:
+    field_x:     [-49.9279, -11.6368]   # Gaussian centres, metres east of the datum
+    field_y:     [29.3333, 43.9777]     # ... and north of it
+    field_amp:   [65.361, -98.4739]
+    field_sigma: [23.1816, 11.5025]     # metres
+```
+
+the Fleet view draws it under the boats (blue low, red high; **Field** in
+the toolbar, opacity in Site...), marks its lowest point *min*, shows its
+range and the value under the cursor top left, and adds *Field here* to a
+boat's tooltip, to compare with the scalar the boat reports. The value is
+the simulator's sum of Gaussians, `Σ amp·exp(−d²/(2σ²))`. Every number must
+be written with a decimal point (`10.0`, not `10`): ROS reads a list of whole
+numbers as integers, which a float-array parameter rejects; the app reports
+such a list and leaves the field out. After editing the file, press Load in
+Site....
 
 If the base ESP32 ever gets a GPS, it can send `BasePosition` (0x82, see
 [Protocol](#protocol)); a fix then overrides the hand-set position (the

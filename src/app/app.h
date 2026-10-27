@@ -5,6 +5,7 @@
 // selected boat, targets, the link) so they stay consistent.
 
 #include "cli.h"
+#include "field_layer.h"
 #include "gamepad.h"
 #include "map_layer.h"
 #include "settings.h"
@@ -221,6 +222,7 @@ private:
     std::string site_loaded_file_;  // what site_ (or site_error_) came from
     std::string site_error_;
     std::array<char, 512> site_file_buf_{};
+    std::unique_ptr<FieldLayer> field_;  // scalar_source's simulated field
     bool range_col_shown_ = false;  // Boats table: base known (Range column shown) last frame
 
     // ---- plots ----

@@ -15,9 +15,25 @@
 
 namespace basestation::site {
 
+// The simulated scalar field (scalar_source: field_x, field_y, field_amp,
+// field_sigma): a sum of Gaussians in the boats' frame, metres east / north
+// of the origin.
+struct Gaussian {
+    double east_m = 0;
+    double north_m = 0;
+    double amp = 0;
+    double sigma_m = 1;
+};
+
+struct ScalarField {
+    std::vector<Gaussian> gaussians;
+    double value(double east_m, double north_m) const;
+};
+
 struct SiteConfig {
     std::optional<geo::LatLon> datum;           // navsat_transform: datum [lat, lon, yaw]
     std::optional<geo::LatLon> lookout_origin;  // lookout: origin_lat, origin_lon
+    std::optional<ScalarField> field;           // absent, or left out with a warning
     std::vector<std::string> warnings;
 
     // The boats' frame origin: the datum, else lookout's origin.
@@ -28,7 +44,8 @@ struct SiteConfig {
 constexpr double ORIGIN_MISMATCH_M = 0.05;
 
 // Parses YAML text. Fails (nullopt, *error) on malformed YAML, malformed
-// values, or when neither origin is present.
+// origin values, or when neither origin is present. A malformed field is
+// left out with a warning instead.
 std::optional<SiteConfig> parse(const std::string& yaml, std::string* error);
 std::optional<SiteConfig> load(const std::string& path, std::string* error);
 

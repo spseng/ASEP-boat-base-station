@@ -21,6 +21,7 @@ struct Options {
     bool base_set = false;      // --base LAT,LON: set the manual base-station position
     double base_lat = 0;
     double base_lon = 0;
+    std::string site_file;      // --site FILE: the boats' site file (remembered)
 
     // For screenshots / testing.
     bool fresh = false;         // --fresh: ignore saved settings + layout, save nothing

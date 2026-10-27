@@ -20,6 +20,8 @@ const char* usage() {
            "  --map URL               show the map from a tile server, URL with {z} {x} {y}\n"
            "                          (remembered, like choosing Custom in Map...)\n"
            "  --base LAT,LON          set the base-station position (remembered)\n"
+           "  --site FILE             the boats' site file: map origin and scalar field\n"
+           "                          (remembered; default: concord_nh.yaml in the submodule)\n"
            "  -h, --help              show this help\n"
            "\n"
            "For screenshots / testing:\n"
@@ -100,6 +102,10 @@ bool parse_cli(int argc, char** argv, Options& out, std::string* error) {
                 return false;
             }
             out.base_set = true;
+        } else if (!std::strcmp(a, "--site")) {
+            const char* v = need_value(i, a);
+            if (!v) return false;
+            out.site_file = v;
         } else if (!std::strcmp(a, "--fresh")) {
             out.fresh = true;
         } else if (!std::strcmp(a, "--select") || !std::strcmp(a, "--test-disable") ||

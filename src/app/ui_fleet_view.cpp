@@ -123,6 +123,12 @@ void App::draw_fleet_view() {
     ImGui::SameLine();
     ImGui::Checkbox("Map", &settings_.map.enabled);
     ImGui::SameLine();
+    if (field_->ready()) {
+        ImGui::Checkbox("Field", &settings_.site.show_field);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+            ImGui::SetTooltip("scalar_source's simulated field from the site file (Site...)");
+        ImGui::SameLine();
+    }
     if (ImGui::Button("Map...")) ImGui::OpenPopup("##mapctl");
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
         ImGui::SetTooltip("Map source, offline mode, downloading an area for offline use, cache");
@@ -310,6 +316,9 @@ void App::draw_fleet_view() {
             const geo::LatLon c = local_->to_geo({view.Y.Min + view.Y.Size() / 2, view.X.Min + view.X.Size() / 2});
             map_zoom_ = tiles::zoom_for_resolution(view.X.Size() / plot_px.x, c.lat_deg, map_source().max_zoom);
         }
+        // The simulated scalar field over the map, under everything else.
+        const bool field_shown = local_ && settings_.site.show_field && field_->ready();
+        if (field_shown) field_->draw(*local_, settings_.site.field_opacity);
 
         // Base-station placement: drag the marker, or click anywhere.
         bool base_drag_hovered = false;
@@ -359,6 +368,17 @@ void App::draw_fleet_view() {
             const ImU32 oc = IM_COL32(150, 155, 165, 120);
             dl->AddLine(ImVec2(o.x - 6 * s, o.y), ImVec2(o.x + 6 * s, o.y), oc, 1.0f);
             dl->AddLine(ImVec2(o.x, o.y - 6 * s), ImVec2(o.x, o.y + 6 * s), oc, 1.0f);
+        }
+
+        // The field's lowest point: where the swarm should end up.
+        if (field_shown) {
+            const geo::NorthEast mn = local_->to_local(field_->min_position());
+            const ImVec2 p = ImPlot::PlotToPixels(mn.east_m, mn.north_m);
+            const ImU32 mc = IM_COL32(255, 255, 255, 230);
+            const float r = 5 * s;
+            dl->AddLine(ImVec2(p.x - r, p.y - r), ImVec2(p.x + r, p.y + r), mc, 2.0f * s);
+            dl->AddLine(ImVec2(p.x - r, p.y + r), ImVec2(p.x + r, p.y - r), mc, 2.0f * s);
+            outlined_text(dl, ImVec2(p.x + 8 * s, p.y - ImGui::GetFontSize() * 0.5f), mc, "min");
         }
 
         const ImVec2 mouse = ImGui::GetMousePos();
@@ -469,6 +489,9 @@ void App::draw_fleet_view() {
                 ImGui::Text("Scalar: %.2f °C", static_cast<double>(b.self_status->self.scalar));
             else
                 ImGui::TextDisabled("Scalar: unknown");
+            if (field_shown)
+                ImGui::Text("Field here: %.2f",
+                            field_->value_at(geo::from_e7(b.self_status->self.lat, b.self_status->self.lon)));
             ImGui::Text("Position: %.1f m E, %.1f m N", hovered->e, hovered->n);
             if (base_pos_.known()) {
                 const geo::NorthEast rel = geo::LocalFrame(base_pos_.pos)
@@ -512,6 +535,21 @@ void App::draw_fleet_view() {
             if (!status.empty())
                 boxed_text(dl, ImVec2(pp.x + pad + 3, pp.y + plot_px.y - ts.y - pad),
                            ImGui::GetColorU32(settings_.map.offline ? colors::warn : colors::muted), status.c_str());
+            ImPlot::PopPlotClipRect();
+        }
+
+        // Field range, and its value under the cursor.
+        if (field_shown) {
+            char buf[96];
+            int n = std::snprintf(buf, sizeof buf, "field %.2f to %.2f", field_->min_value(), field_->max_value());
+            if (ImPlot::IsPlotHovered() && n > 0 && n < static_cast<int>(sizeof buf)) {
+                const ImPlotPoint mp = ImPlot::GetPlotMousePos();
+                std::snprintf(buf + n, sizeof buf - static_cast<size_t>(n), "   here %.2f",
+                              field_->value_at(local_->to_geo({mp.y, mp.x})));
+            }
+            ImPlot::PushPlotClipRect();
+            const ImVec2 pp = ImPlot::GetPlotPos();
+            boxed_text(dl, ImVec2(pp.x + 4 * s + 3, pp.y + 4 * s), IM_COL32(230, 230, 230, 255), buf);
             ImPlot::PopPlotClipRect();
         }
 

@@ -100,8 +100,10 @@ App::App(const Options& opts, float ui_scale, SDL_Renderer* renderer)
         settings_.base.lat = opts_.base_lat;
         settings_.base.lon = opts_.base_lon;
     }
+    if (!opts_.site_file.empty()) settings_.site.file = opts_.site_file;
     copy_to(map_url_buf_, settings_.map.custom_url);
     open_map_layer();
+    field_ = std::make_unique<FieldLayer>(renderer_);
     load_site();
     update_base_position();
 
