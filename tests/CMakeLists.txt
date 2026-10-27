@@ -12,6 +12,7 @@ add_executable(basestation_tests
   test_map_tiles.cpp
   test_tile_service.cpp
   test_msg_catalog.cpp
+  test_site_config.cpp
 )
 target_link_libraries(basestation_tests PRIVATE basestation_core basestation_warnings Catch2::Catch2WithMain)
 # The simulator integration test launches the simulator binary.
@@ -20,6 +21,10 @@ if(TARGET asep_fake_base)
   target_compile_definitions(basestation_tests PRIVATE
     ASEP_FAKE_BASE_PATH="$<TARGET_FILE:asep_fake_base>")
 endif()
+
+# The boats' site file in the submodule, checked for a consistent origin.
+target_compile_definitions(basestation_tests PRIVATE
+  ASEP_SITE_FILE="${ASEP_BOAT_DIR}/ros/bringup/config/cites/concord_nh.yaml")
 
 include(Catch)
 catch_discover_tests(basestation_tests)

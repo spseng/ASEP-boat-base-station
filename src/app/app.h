@@ -18,6 +18,7 @@
 #include <basestation/core/link_session.h>
 #include <basestation/core/map_tiles.h>
 #include <basestation/core/serial_port.h>
+#include <basestation/core/site_config.h>
 #include <basestation/core/teleop.h>
 #include <basestation/core/teleop_sender.h>
 #include <basestation/proto/names.h>
@@ -97,6 +98,12 @@ private:
     void open_map_layer();                   // (re)creates map_ for the cache dir
     void draw_map_controls();                // Map... popup contents
     void draw_base_controls();               // Base... popup contents
+    // Site file: the boats' frame origin.
+    std::string effective_site_file() const;
+    void load_site();
+    // The origin the site pins the Fleet view to, if it does.
+    std::optional<geo::LatLon> site_origin() const;
+    void draw_site_controls();               // Site... popup contents
     void draw_map_download_window();
     void open_download_window(int area_mode, std::optional<geo::LatLon> point);
 
@@ -208,6 +215,12 @@ private:
     double base_edit_lat_ = 0, base_edit_lon_ = 0;
     bool base_edit_init_ = false;
     geo::LatLon ctx_point_{};       // where the Fleet view context menu was opened
+
+    // ---- site file ----
+    std::optional<site::SiteConfig> site_;
+    std::string site_loaded_file_;  // what site_ (or site_error_) came from
+    std::string site_error_;
+    std::array<char, 512> site_file_buf_{};
     bool range_col_shown_ = false;  // Boats table: base known (Range column shown) last frame
 
     // ---- plots ----

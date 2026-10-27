@@ -102,6 +102,7 @@ App::App(const Options& opts, float ui_scale, SDL_Renderer* renderer)
     }
     copy_to(map_url_buf_, settings_.map.custom_url);
     open_map_layer();
+    load_site();
     update_base_position();
 
     events_.info("ASEP base station started");
@@ -198,8 +199,8 @@ void App::update_link() {
     link_.poll(rx_buf_);
     for (const RxFrame& rx : rx_buf_) fleet_.ingest(rx);
 
-    // The local map frame is anchored at the base station if its position is
-    // known, else at the first boat position we receive.
+    // The local map frame is anchored at the site datum, else at the base
+    // station if its position is known, else at the first boat position.
     update_base_position();
     if (!local_) {
         for (const auto& [id, b] : fleet_.boats()) {

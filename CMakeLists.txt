@@ -69,6 +69,7 @@ add_library(basestation_core STATIC
   src/core/src/http_client.cpp
   src/core/src/tile_service.cpp
   src/core/src/msg_catalog.cpp
+  src/core/src/site_config.cpp
 )
 target_include_directories(basestation_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
 target_link_libraries(basestation_core
@@ -92,6 +93,12 @@ else()
 endif()
 
 include(cmake/Dependencies.cmake)
+
+# The boats' site file (map origin) is read with yaml-cpp. Its headers are
+# SYSTEM so their warnings stay out of our zero-warning build.
+target_link_libraries(basestation_core PRIVATE yaml-cpp::yaml-cpp)
+get_target_property(_yaml_inc yaml-cpp INTERFACE_INCLUDE_DIRECTORIES)
+target_include_directories(basestation_core SYSTEM PRIVATE ${_yaml_inc})
 
 if(BASESTATION_BUILD_SIM)
   add_subdirectory(src/sim)
