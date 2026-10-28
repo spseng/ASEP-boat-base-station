@@ -235,11 +235,7 @@ void App::update_link() {
     if (link_error_.empty()) {
         link_error_ = link_.last_error();
         if (link_error_.empty()) link_error_ = "link closed";
-        if (frame_log_.is_open()) {
-            events_.info("Session log closed: " + frame_log_.path() + " (" +
-                         std::to_string(frame_log_.records()) + " records)");
-            frame_log_.close();
-        }
+        stop_recording();
         connected_at_.reset();
         next_retry_ = now + std::chrono::seconds(1);
         retry_failure_logged_ = false;
@@ -338,19 +334,7 @@ bool App::connect(const std::string& path, uint32_t baud, bool user_initiated) {
     frame_log_.close();
 
     // Open the log first so the very first received frame is recorded.
-    std::string log_path;
-    if (record_) {
-        std::string err;
-        std::string dir = effective_log_dir();
-        if (!dir.empty() && dir.back() != '/') dir += '/';
-        log_path = dir + default_log_filename();
-        if (frame_log_.open(log_path, &err)) {
-            events_.info("Recording session to " + log_path);
-        } else {
-            events_.error("Could not open session log: " + err);
-            log_path.clear();
-        }
-    }
+    const std::string log_path = record_ ? start_recording() : std::string();
 
     std::string err;
     if (!link_.open(path, baud, &err)) {
@@ -382,6 +366,26 @@ bool App::connect(const std::string& path, uint32_t baud, bool user_initiated) {
         settings_.baud = baud;
     }
     return true;
+}
+
+std::string App::start_recording() {
+    std::string err;
+    std::string dir = effective_log_dir();
+    if (!dir.empty() && dir.back() != '/') dir += '/';
+    const std::string log_path = dir + default_log_filename();
+    if (!frame_log_.open(log_path, &err)) {
+        events_.error("Could not open session log: " + err);
+        return {};
+    }
+    events_.info("Recording session to " + log_path);
+    return log_path;
+}
+
+void App::stop_recording() {
+    if (!frame_log_.is_open()) return;
+    events_.info("Session log closed: " + frame_log_.path() + " (" + std::to_string(frame_log_.records()) +
+                 " records)");
+    frame_log_.close();
 }
 
 void App::disconnect() {
