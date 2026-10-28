@@ -153,9 +153,15 @@ void App::draw_toolbar() {
 
     // ---- recording ----
     ImGui::SameLine(0, em);
-    if (ImGui::Checkbox("Rec", &record_)) settings_.record = record_;
+    if (ImGui::Checkbox("Rec", &record_)) {
+        settings_.record = record_;
+        // Takes effect now, not only on the next connect.
+        if (!record_) stop_recording();
+        else if (link_.is_open() && !frame_log_.is_open()) start_recording();
+    }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Record every frame to a session log on the next connect.\nLog folder: %s",
+        ImGui::SetTooltip("Record every frame to a session log while connected (a new file on each connect,\n"
+                          "or right away when ticked while connected).\nLog folder: %s",
                           effective_log_dir().c_str());
     if (frame_log_.is_open()) {
         ImGui::SameLine();

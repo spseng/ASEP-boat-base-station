@@ -94,14 +94,17 @@ void App::draw_link() {
     }
     ImGui::SameLine();
     ImGui::TextUnformatted("Folder");
-    help_marker("Session logs (.aseplog) are written here on each connect when Rec is on. Empty = default.");
+    help_marker("Session logs (.aseplog) are written here while Rec is on: a new file on each connect, or "
+                "right away when Rec is ticked while connected. Empty = default.");
     if (frame_log_.is_open()) {
         ImGui::TextColored(colors::danger, "REC");
         ImGui::SameLine();
         ImGui::TextWrapped("%s  (%llu records)", frame_log_.path().c_str(),
                            static_cast<unsigned long long>(frame_log_.records()));
     } else {
-        ImGui::TextDisabled(record_ ? "Not recording (starts on connect)" : "Recording off");
+        ImGui::TextDisabled(!record_          ? "Recording off"
+                            : link_.is_open() ? "Not recording (the log could not be opened, see Events)"
+                                              : "Not recording (starts on connect)");
     }
 
     if (wide) ImGui::TableNextColumn();

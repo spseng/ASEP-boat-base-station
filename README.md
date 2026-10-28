@@ -116,9 +116,13 @@ it prints each land frame it transmits and which boats heard it.
 
 ### Session logs
 
-While connected, every frame received and sent is written to
-`asep-YYYYmmdd-HHMMSS.aseplog` in the log directory, which can be changed in
-the app. `asep_log_dump` turns a log into CSV:
+While connected with **Rec** ticked, every frame received and sent is
+written to `asep-YYYYmmdd-HHMMSS.aseplog` in the log directory (a new file on
+each connect; ticking Rec while connected starts one right away, unticking it
+closes it). The directory can be changed in the Link panel; by default it is
+`~/Library/Application Support/spseng/asep-base-station/logs` on macOS and
+`~/.local/share/spseng/asep-base-station/logs` on Ubuntu. `asep_log_dump`
+turns a log into CSV:
 
 ```sh
 ./build/src/sim/asep_log_dump session.aseplog > session.csv

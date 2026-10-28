@@ -59,6 +59,9 @@ private:
     bool connect(const std::string& path, uint32_t baud, bool user_initiated);
     void disconnect();
     std::string effective_log_dir() const;
+    // Opens a new session log; its path, or empty (error in the events).
+    std::string start_recording();
+    void stop_recording();
 
     // ---- selection / targets (app.cpp) ----
     void select_boat(std::optional<uint8_t> id);
@@ -143,7 +146,7 @@ private:
     std::array<char, 512> port_buf_{};
     uint32_t baud_ = 0;
     std::vector<SerialPortInfo> ports_;
-    bool record_ = true;  // record a log on the next connect
+    bool record_ = true;  // record a session log while connected
     std::string log_dir_;  // session value (CLI or settings)
     std::array<char, 512> log_dir_buf_{};  // Link panel editor
     bool want_connected_ = false;  // user asked to be connected
